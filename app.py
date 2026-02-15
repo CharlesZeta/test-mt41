@@ -132,6 +132,42 @@ def cleanup_expired_commands():
 cleanup_thread = threading.Thread(target=cleanup_expired_commands, daemon=True)
 cleanup_thread.start()
 
+# ==================== 全局错误处理 ====================
+
+@app.errorhandler(404)
+def not_found(error):
+    """404错误返回JSON"""
+    return jsonify({'error': 'Not found', 'path': request.path}), 404
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    """405错误返回JSON"""
+    return jsonify({'error': 'Method not allowed', 'method': request.method}), 405
+
+@app.errorhandler(500)
+def internal_error(error):
+    """500错误返回JSON"""
+    import traceback
+    error_msg = str(error)
+    traceback_str = traceback.format_exc()
+    print(f"Internal error: {error_msg}\n{traceback_str}")
+    return jsonify({
+        'error': 'Internal server error',
+        'message': error_msg
+    }), 500
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """捕获所有未处理的异常，返回JSON"""
+    import traceback
+    error_msg = str(e)
+    traceback_str = traceback.format_exc()
+    print(f"Unhandled exception: {error_msg}\n{traceback_str}")
+    return jsonify({
+        'error': 'Internal server error',
+        'message': error_msg
+    }), 500
+
 # ==================== MT4 接口 ====================
 
 @app.route('/mt4/commands', methods=['GET'])
@@ -303,79 +339,93 @@ def post_positions():
 @app.route('/api/command', methods=['POST'])
 def create_command():
     """创建命令（网页端调用）"""
-    data = request.get_json() or {}
-    account = data.get('account', '')
-    action = data.get('action', '')
-    
-    if not account or not action:
-        return jsonify({'error': 'account and action required'}), 400
-    
-    # 生成命令 ID 和 nonce
-    cmd_id = generate_cmd_id()
-    nonce = generate_nonce()
-    
-    # 去重检查
-    dedupe_hash = compute_dedupe_hash(action, account, **data)
-    deduped = False
-    
-    with data_lock:
-        # 检查去重窗口
-        cache = dedupe_cache[account]
-        if dedupe_hash in cache:
-            existing_cmd_id, _ = cache[dedupe_hash]
-            # 如果命令还在队列中，返回已存在的 cmd_id
-            if existing_cmd_id in command_states:
-                state = command_states[existing_cmd_id]
-                if state.get('state') in ['QUEUED', 'DELIVERED']:
-                    deduped = True
-                    cmd_id = existing_cmd_id
-                    # 从原始命令获取 nonce
-                    if 'command' in state and 'nonce' in state['command']:
-                        nonce = state['command']['nonce']
-                    else:
-                        # 如果找不到，从队列中查找
-                        for cmd in command_queues[account]:
-                            if cmd.get('id') == existing_cmd_id:
-                                nonce = cmd.get('nonce', '')
-                                break
+    try:
+        # 检查Content-Type
+        if not request.is_json:
+            return jsonify({'error': 'Content-Type must be application/json'}), 400
         
-        if not deduped:
-            # 创建新命令
-            command = {
-                'id': cmd_id,
-                'nonce': nonce,
-                'action': action,
-                'account': account,
-                'created_at': time.time(),
-                'ttl_sec': data.get('ttl_sec', 10),
-                **{k: v for k, v in data.items() if k not in ['account', 'action', 'ttl_sec']}
-            }
+        data = request.get_json() or {}
+        account = data.get('account', '')
+        action = data.get('action', '')
+        
+        if not account or not action:
+            return jsonify({'error': 'account and action required'}), 400
+        
+        # 生成命令 ID 和 nonce
+        cmd_id = generate_cmd_id()
+        nonce = generate_nonce()
+        
+        # 去重检查
+        dedupe_hash = compute_dedupe_hash(action, account, **data)
+        deduped = False
+        
+        with data_lock:
+            # 检查去重窗口
+            cache = dedupe_cache[account]
+            if dedupe_hash in cache:
+                existing_cmd_id, _ = cache[dedupe_hash]
+                # 如果命令还在队列中，返回已存在的 cmd_id
+                if existing_cmd_id in command_states:
+                    state = command_states[existing_cmd_id]
+                    if state.get('state') in ['QUEUED', 'DELIVERED']:
+                        deduped = True
+                        cmd_id = existing_cmd_id
+                        # 从原始命令获取 nonce
+                        if 'command' in state and 'nonce' in state['command']:
+                            nonce = state['command']['nonce']
+                        else:
+                            # 如果找不到，从队列中查找
+                            for cmd in command_queues[account]:
+                                if cmd.get('id') == existing_cmd_id:
+                                    nonce = cmd.get('nonce', '')
+                                    break
             
-            # 入队
-            command_queues[account].append(command)
-            
-            # 记录状态
-            command_states[cmd_id] = {
-                'state': 'QUEUED',
-                'created_at': command['created_at'],
-                'action': action,
-                'symbol': data.get('symbol', ''),
-                'command': command,
-            }
-            
-            # 更新去重缓存
-            cache[dedupe_hash] = (cmd_id, time.time())
-            
-            metrics['total_commands'] += 1
-        else:
-            metrics['dedupe_hits'] += 1
-    
-    return jsonify({
-        'ok': True,
-        'id': cmd_id,
-        'nonce': nonce,
-        'deduped': deduped,
-    })
+            if not deduped:
+                # 创建新命令
+                command = {
+                    'id': cmd_id,
+                    'nonce': nonce,
+                    'action': action,
+                    'account': account,
+                    'created_at': time.time(),
+                    'ttl_sec': data.get('ttl_sec', 10),
+                    **{k: v for k, v in data.items() if k not in ['account', 'action', 'ttl_sec']}
+                }
+                
+                # 入队
+                command_queues[account].append(command)
+                
+                # 记录状态
+                command_states[cmd_id] = {
+                    'state': 'QUEUED',
+                    'created_at': command['created_at'],
+                    'action': action,
+                    'symbol': data.get('symbol', ''),
+                    'command': command,
+                }
+                
+                # 更新去重缓存
+                cache[dedupe_hash] = (cmd_id, time.time())
+                
+                metrics['total_commands'] += 1
+            else:
+                metrics['dedupe_hits'] += 1
+        
+        return jsonify({
+            'ok': True,
+            'id': cmd_id,
+            'nonce': nonce,
+            'deduped': deduped,
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        traceback_str = traceback.format_exc()
+        print(f"create_command error: {error_msg}\n{traceback_str}")
+        return jsonify({
+            'ok': False,
+            'error': error_msg
+        }), 500
 
 @app.route('/api/data', methods=['GET'])
 def get_data():
@@ -692,7 +742,19 @@ HTML_TEMPLATE = '''
             const account = getAccount();
             try {
                 const res = await fetch(`/api/data?account=${account}`);
-                const data = await res.json();
+                
+                // 检查响应内容类型
+                const contentType = res.headers.get('content-type');
+                let data;
+                
+                if (contentType && contentType.includes('application/json')) {
+                    data = await res.json();
+                } else {
+                    // 如果不是JSON，读取文本内容
+                    const text = await res.text();
+                    console.error('非JSON响应:', text.substring(0, 200));
+                    throw new Error(`服务器返回非JSON响应 (HTTP ${res.status}): ${text.substring(0, 100)}`);
+                }
                 
                 // 更新统计面板
                 const stats = data.metrics;
@@ -843,19 +905,34 @@ HTML_TEMPLATE = '''
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(payload),
                 });
-                const result = await res.json();
+                
+                // 检查响应内容类型
+                const contentType = res.headers.get('content-type');
+                let result;
+                
+                if (contentType && contentType.includes('application/json')) {
+                    result = await res.json();
+                } else {
+                    // 如果不是JSON，读取文本内容
+                    const text = await res.text();
+                    console.error('非JSON响应:', text.substring(0, 200));
+                    throw new Error(`服务器返回非JSON响应 (HTTP ${res.status}): ${text.substring(0, 100)}`);
+                }
                 
                 const resultDiv = document.getElementById('commandResult');
-                if (result.ok) {
+                if (res.ok && result.ok) {
                     resultDiv.innerHTML = `<div class="success">✓ 命令已创建: ${result.id} (deduped: ${result.deduped})</div>`;
                 } else {
-                    resultDiv.innerHTML = `<div class="error">✗ 错误: ${result.error}</div>`;
+                    const errorMsg = result.error || result.message || `HTTP ${res.status}`;
+                    resultDiv.innerHTML = `<div class="error">✗ 错误: ${errorMsg}</div>`;
                 }
                 
                 // 刷新数据
                 setTimeout(loadData, 500);
             } catch (error) {
-                document.getElementById('commandResult').innerHTML = `<div class="error">✗ 请求失败: ${error}</div>`;
+                console.error('发送命令错误:', error);
+                const errorMsg = error.message || String(error);
+                document.getElementById('commandResult').innerHTML = `<div class="error">✗ 请求失败: ${errorMsg}</div>`;
             }
         }
         
