@@ -137,12 +137,16 @@ cleanup_thread.start()
 @app.errorhandler(404)
 def not_found(error):
     """404错误返回JSON"""
-    return jsonify({'error': 'Not found', 'path': request.path}), 404
+    response = jsonify({'error': 'Not found', 'path': request.path})
+    response.headers['Content-Type'] = 'application/json'
+    return response, 404
 
 @app.errorhandler(405)
 def method_not_allowed(error):
     """405错误返回JSON"""
-    return jsonify({'error': 'Method not allowed', 'method': request.method}), 405
+    response = jsonify({'error': 'Method not allowed', 'method': request.method})
+    response.headers['Content-Type'] = 'application/json'
+    return response, 405
 
 @app.errorhandler(500)
 def internal_error(error):
@@ -151,10 +155,12 @@ def internal_error(error):
     error_msg = str(error)
     traceback_str = traceback.format_exc()
     print(f"Internal error: {error_msg}\n{traceback_str}")
-    return jsonify({
+    response = jsonify({
         'error': 'Internal server error',
         'message': error_msg
-    }), 500
+    })
+    response.headers['Content-Type'] = 'application/json'
+    return response, 500
 
 @app.errorhandler(Exception)
 def handle_exception(e):
@@ -163,21 +169,37 @@ def handle_exception(e):
     error_msg = str(e)
     traceback_str = traceback.format_exc()
     print(f"Unhandled exception: {error_msg}\n{traceback_str}")
-    return jsonify({
+    response = jsonify({
         'error': 'Internal server error',
         'message': error_msg
-    }), 500
+    })
+    response.headers['Content-Type'] = 'application/json'
+    return response, 500
 
-# ==================== MT4 接口 ====================
+# ==================== MT4 API 接口（仅JSON，路径：/web/api/mt4/...）===================
 
-@app.route('/mt4/commands', methods=['GET'])
+@app.route('/web/api/mt4/commands', methods=['GET', 'POST'])
 def get_commands():
-    """MT4 轮询拉取命令"""
-    account = request.args.get('account', '')
-    max_count = int(request.args.get('max', 50))
+    """MT4 轮询拉取命令 - 支持GET和POST"""
+    # 优先从POST JSON获取，其次从GET参数获取
+    if request.method == 'POST':
+        data = request.get_json() or {}
+        account = data.get('account', '') or request.args.get('account', '')
+        max_count = int(data.get('max', request.args.get('max', 50)))
+    else:
+        account = request.args.get('account', '')
+        max_count = int(request.args.get('max', 50))
+    
+    # 调试日志
+    print(f"[MT4 Commands] Method: {request.method}, Account: {account}, Max: {max_count}")
+    print(f"[MT4 Commands] GET args: {dict(request.args)}")
+    if request.method == 'POST':
+        print(f"[MT4 Commands] POST data: {request.get_json()}")
     
     if not account:
-        return jsonify({'error': 'account required'}), 400
+        response = jsonify({'error': 'account required'})
+        response.headers['Content-Type'] = 'application/json'
+        return response, 400
     
     with data_lock:
         queue = command_queues.get(account, deque())
@@ -207,21 +229,32 @@ def get_commands():
         
         metrics['delivered_count'] += len(commands)
         queue_len = len(queue)
+        
+        # 确保返回的命令中，created_at是整数（MT4 EA期望整数）
+        for cmd in commands:
+            if 'created_at' in cmd and isinstance(cmd['created_at'], float):
+                cmd['created_at'] = int(cmd['created_at'])
+            if 'ttl_sec' in cmd and isinstance(cmd['ttl_sec'], float):
+                cmd['ttl_sec'] = int(cmd['ttl_sec'])
     
-    return jsonify({
+    response = jsonify({
         'commands': commands,
-        'server_ts': time.time(),
+        'server_ts': int(time.time()),
         'queue_len': queue_len,
     })
+    response.headers['Content-Type'] = 'application/json'
+    return response
 
-@app.route('/mt4/status', methods=['POST'])
+@app.route('/web/api/mt4/status', methods=['POST'])
 def post_status():
     """MT4 上报状态"""
     data = request.get_json() or {}
     account = data.get('account', '')
     
     if not account:
-        return jsonify({'error': 'account required'}), 400
+        response = jsonify({'error': 'account required'})
+        response.headers['Content-Type'] = 'application/json'
+        return response, 400
     
     with data_lock:
         latest_status[account] = {
@@ -229,9 +262,11 @@ def post_status():
             'updated_at': time.time(),
         }
     
-    return jsonify({'ok': True})
+    response = jsonify({'ok': True})
+    response.headers['Content-Type'] = 'application/json'
+    return response
 
-@app.route('/mt4/report', methods=['POST'])
+@app.route('/web/api/mt4/report', methods=['POST'])
 def post_report():
     """MT4 上报执行结果"""
     data = request.get_json() or {}
@@ -240,7 +275,9 @@ def post_report():
     nonce = data.get('nonce', '')
     
     if not account or not cmd_id:
-        return jsonify({'error': 'account and cmd_id required'}), 400
+        response = jsonify({'error': 'account and cmd_id required'})
+        response.headers['Content-Type'] = 'application/json'
+        return response, 400
     
     with data_lock:
         # 校验 cmd_id 和 nonce
@@ -298,16 +335,20 @@ def post_report():
             'timestamp': time.time(),
         })
     
-    return jsonify({'ok': True})
+    response = jsonify({'ok': True})
+    response.headers['Content-Type'] = 'application/json'
+    return response
 
-@app.route('/mt4/quote', methods=['POST'])
+@app.route('/web/api/mt4/quote', methods=['POST'])
 def post_quote():
     """MT4 上报报价"""
     data = request.get_json() or {}
     account = data.get('account', '')
     
     if not account:
-        return jsonify({'error': 'account required'}), 400
+        response = jsonify({'error': 'account required'})
+        response.headers['Content-Type'] = 'application/json'
+        return response, 400
     
     with data_lock:
         quotes[account].append({
@@ -315,16 +356,20 @@ def post_quote():
             'timestamp': time.time(),
         })
     
-    return jsonify({'ok': True})
+    response = jsonify({'ok': True})
+    response.headers['Content-Type'] = 'application/json'
+    return response
 
-@app.route('/mt4/positions', methods=['POST'])
+@app.route('/web/api/mt4/positions', methods=['POST'])
 def post_positions():
     """MT4 上报持仓"""
     data = request.get_json() or {}
     account = data.get('account', '')
     
     if not account:
-        return jsonify({'error': 'account required'}), 400
+        response = jsonify({'error': 'account required'})
+        response.headers['Content-Type'] = 'application/json'
+        return response, 400
     
     with data_lock:
         positions_data[account] = {
@@ -332,24 +377,30 @@ def post_positions():
             'updated_at': time.time(),
         }
     
-    return jsonify({'ok': True})
+    response = jsonify({'ok': True})
+    response.headers['Content-Type'] = 'application/json'
+    return response
 
-# ==================== Web API 接口 ====================
+# ==================== 前端 Web API 接口（仅JSON，路径：/web/api/...）===================
 
-@app.route('/api/command', methods=['POST'])
+@app.route('/web/api/command', methods=['POST'])
 def create_command():
     """创建命令（网页端调用）"""
     try:
         # 检查Content-Type
         if not request.is_json:
-            return jsonify({'error': 'Content-Type must be application/json'}), 400
+            response = jsonify({'error': 'Content-Type must be application/json'})
+            response.headers['Content-Type'] = 'application/json'
+            return response, 400
         
         data = request.get_json() or {}
         account = data.get('account', '')
         action = data.get('action', '')
         
         if not account or not action:
-            return jsonify({'error': 'account and action required'}), 400
+            response = jsonify({'error': 'account and action required'})
+            response.headers['Content-Type'] = 'application/json'
+            return response, 400
         
         # 生成命令 ID 和 nonce
         cmd_id = generate_cmd_id()
@@ -412,23 +463,27 @@ def create_command():
             else:
                 metrics['dedupe_hits'] += 1
         
-        return jsonify({
+        response = jsonify({
             'ok': True,
             'id': cmd_id,
             'nonce': nonce,
             'deduped': deduped,
         })
+        response.headers['Content-Type'] = 'application/json'
+        return response
     except Exception as e:
         import traceback
         error_msg = str(e)
         traceback_str = traceback.format_exc()
         print(f"create_command error: {error_msg}\n{traceback_str}")
-        return jsonify({
+        response = jsonify({
             'ok': False,
             'error': error_msg
-        }), 500
+        })
+        response.headers['Content-Type'] = 'application/json'
+        return response, 500
 
-@app.route('/api/data', methods=['GET'])
+@app.route('/web/api/data', methods=['GET'])
 def get_data():
     """获取数据（供前端拉取）"""
     account = request.args.get('account', '')
@@ -497,7 +552,7 @@ def get_data():
         ]
         avg_latency = sum(latencies) / len(latencies) if latencies else 0
     
-    return jsonify({
+    response = jsonify({
         'status': status,
         'commands': commands_list,
         'reports': reports_list,
@@ -518,6 +573,8 @@ def get_data():
         },
         'server_ts': time.time(),
     })
+    response.headers['Content-Type'] = 'application/json'
+    return response
 
 # ==================== 可视化页面 ====================
 
@@ -742,7 +799,7 @@ HTML_TEMPLATE = '''
         async function loadData() {
             const account = getAccount();
             try {
-                const res = await fetch(`/api/data?account=${account}`);
+                const res = await fetch(`/web/api/data?account=${account}`);
                 
                 // 检查响应内容类型
                 const contentType = res.headers.get('content-type');
@@ -901,7 +958,7 @@ HTML_TEMPLATE = '''
             }
             
             try {
-                const res = await fetch('/api/command', {
+                const res = await fetch('/web/api/command', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(payload),
@@ -956,20 +1013,24 @@ HTML_TEMPLATE = '''
 </html>
 '''
 
-@app.route('/api', methods=['GET'])
-def api_page():
-    """可视化页面"""
+# ==================== 展示页面（HTML，路径：/web 或 /）===================
+
+@app.route('/web', methods=['GET'])
+def web_page():
+    """可视化展示页面（HTML）"""
     return render_template_string(HTML_TEMPLATE)
 
 @app.route('/', methods=['GET'])
 def index():
-    """首页重定向到 /api"""
-    return render_template_string('<script>window.location.href="/api";</script>')
+    """首页重定向到 /web"""
+    return render_template_string('<script>window.location.href="/web";</script>')
 
 if __name__ == '__main__':
     print("=" * 60)
     print("MT4 量化交易系统后端启动")
     print("=" * 60)
-    print("访问 http://localhost:5000/api 查看可视化界面")
+    print("展示页面: http://localhost:5000/web 或 http://localhost:5000/")
+    print("MT4 API: /web/api/mt4/... (仅JSON)")
+    print("前端API: /web/api/... (仅JSON)")
     print("=" * 60)
     app.run(host='0.0.0.0', port=5000, debug=True, threaded=True)
