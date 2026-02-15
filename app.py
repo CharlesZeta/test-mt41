@@ -183,99 +183,174 @@ def get_commands():
     """MT4 轮询拉取命令 - 支持GET和POST"""
     try:
         # 优先从POST JSON获取，其次从GET参数获取
-        if request.method == 'POST':
-            data = request.get_json() or {}
-            account = data.get('account', '') or request.args.get('account', '')
-            max_count = int(data.get('max', request.args.get('max', 50)))
-        else:
+        try:
+            if request.method == 'POST':
+                data = request.get_json() or {}
+                account = data.get('account', '') or request.args.get('account', '')
+                # 安全转换 max_count
+                try:
+                    max_val = data.get('max') or request.args.get('max', 50)
+                    max_count = int(max_val) if max_val else 50
+                except (ValueError, TypeError):
+                    max_count = 50
+            else:
+                account = request.args.get('account', '')
+                try:
+                    max_count = int(request.args.get('max', 50))
+                except (ValueError, TypeError):
+                    max_count = 50
+        except Exception as parse_err:
+            print(f"[MT4 Commands] Parse error: {parse_err}")
             account = request.args.get('account', '')
-            max_count = int(request.args.get('max', 50))
+            max_count = 50
         
         # 调试日志
         print(f"[MT4 Commands] Method: {request.method}, Account: {account}, Max: {max_count}")
         print(f"[MT4 Commands] GET args: {dict(request.args)}")
         if request.method == 'POST':
-            print(f"[MT4 Commands] POST data: {request.get_json()}")
+            try:
+                print(f"[MT4 Commands] POST data: {request.get_json()}")
+            except:
+                print(f"[MT4 Commands] POST data: (无法解析)")
         
         if not account:
             response = jsonify({'error': 'account required'})
             response.headers['Content-Type'] = 'application/json'
             return response, 400
         
-        with data_lock:
-            queue = command_queues.get(account, deque())
-            commands = []
-            delivered_ids = []
-            
-            # 批量取走命令
-            for _ in range(min(max_count, len(queue))):
-                if queue:
-                    cmd = queue.popleft()
-                    cmd_id = cmd.get('id')
-                    
-                    # 创建命令副本，确保JSON可序列化
-                    clean_cmd = {}
-                    for key, value in cmd.items():
-                        # 跳过None值，转换数据类型
-                        if value is None:
-                            continue
-                        elif isinstance(value, float):
-                            # 对于浮点数，如果是整数部分，转换为int
-                            if key in ['created_at', 'ttl_sec', 'volume', 'sl_points', 'tp_points', 'max_spread_points', 'risk_alloc_pct']:
-                                if key in ['created_at', 'ttl_sec']:
-                                    clean_cmd[key] = int(value)
+        try:
+            with data_lock:
+                queue = command_queues.get(account, deque())
+                commands = []
+                delivered_ids = []
+                
+                # 批量取走命令
+                max_to_take = min(max_count, len(queue))
+                for _ in range(max_to_take):
+                    if queue:
+                        try:
+                            cmd = queue.popleft()
+                            cmd_id = cmd.get('id', '')
+                            
+                            if not cmd_id:
+                                continue
+                            
+                            # 创建命令副本，确保JSON可序列化
+                            clean_cmd = {}
+                            try:
+                                for key, value in cmd.items():
+                                    # 跳过None值，转换数据类型
+                                    if value is None:
+                                        continue
+                                    elif isinstance(value, float):
+                                        # 对于浮点数，如果是整数部分，转换为int
+                                        if key in ['created_at', 'ttl_sec']:
+                                            try:
+                                                clean_cmd[key] = int(value)
+                                            except (ValueError, OverflowError):
+                                                clean_cmd[key] = 0
+                                        else:
+                                            # 检查是否为 NaN 或 Inf
+                                            if not (value != value or value == float('inf') or value == float('-inf')):
+                                                clean_cmd[key] = value
+                                    elif isinstance(value, (str, int, bool)):
+                                        clean_cmd[key] = value
+                                    elif isinstance(value, (list, dict)):
+                                        # 递归清理嵌套结构
+                                        try:
+                                            json.dumps(value)  # 测试是否可序列化
+                                            clean_cmd[key] = value
+                                        except (TypeError, ValueError):
+                                            clean_cmd[key] = str(value)
+                                    else:
+                                        # 其他类型转换为字符串
+                                        clean_cmd[key] = str(value)
+                            except Exception as clean_err:
+                                print(f"[MT4 Commands] Clean cmd error: {clean_err}")
+                                # 如果清理失败，至少保留基本字段
+                                clean_cmd = {
+                                    'id': cmd_id,
+                                    'action': cmd.get('action', 'UNKNOWN'),
+                                    'account': cmd.get('account', account),
+                                }
+                            
+                            commands.append(clean_cmd)
+                            delivered_ids.append(cmd_id)
+                            
+                            # 更新状态为 DELIVERED
+                            try:
+                                if cmd_id in command_states:
+                                    command_states[cmd_id]['state'] = 'DELIVERED'
+                                    command_states[cmd_id]['delivered_at'] = time.time()
                                 else:
-                                    clean_cmd[key] = value
-                            else:
-                                clean_cmd[key] = value
-                        elif isinstance(value, (str, int, bool)):
-                            clean_cmd[key] = value
-                        elif isinstance(value, (list, dict)):
-                            clean_cmd[key] = value
-                        else:
-                            # 其他类型转换为字符串
-                            clean_cmd[key] = str(value)
-                    
-                    commands.append(clean_cmd)
-                    delivered_ids.append(cmd_id)
-                    
-                    # 更新状态为 DELIVERED
-                    if cmd_id in command_states:
-                        command_states[cmd_id]['state'] = 'DELIVERED'
-                        command_states[cmd_id]['delivered_at'] = time.time()
-                    else:
-                        command_states[cmd_id] = {
-                            'state': 'DELIVERED',
-                            'delivered_at': time.time(),
-                            'created_at': clean_cmd.get('created_at'),
-                            'action': clean_cmd.get('action'),
-                            'symbol': clean_cmd.get('symbol', ''),
-                        }
-            
-            metrics['delivered_count'] += len(commands)
-            queue_len = len(queue)
+                                    command_states[cmd_id] = {
+                                        'state': 'DELIVERED',
+                                        'delivered_at': time.time(),
+                                        'created_at': clean_cmd.get('created_at', time.time()),
+                                        'action': clean_cmd.get('action', 'UNKNOWN'),
+                                        'symbol': clean_cmd.get('symbol', ''),
+                                    }
+                            except Exception as state_err:
+                                print(f"[MT4 Commands] State update error: {state_err}")
+                        except Exception as cmd_err:
+                            print(f"[MT4 Commands] Process cmd error: {cmd_err}")
+                            continue
+                
+                metrics['delivered_count'] += len(commands)
+                queue_len = len(queue)
+        except Exception as lock_err:
+            print(f"[MT4 Commands] Lock error: {lock_err}")
+            import traceback
+            print(traceback.format_exc())
+            commands = []
+            queue_len = 0
         
-        response = jsonify({
-            'commands': commands,
-            'server_ts': int(time.time()),
-            'queue_len': queue_len,
-        })
+        # 确保响应数据可序列化
+        try:
+            response_data = {
+                'commands': commands,
+                'server_ts': int(time.time()),
+                'queue_len': queue_len,
+            }
+            # 测试序列化
+            json.dumps(response_data)
+        except Exception as json_err:
+            print(f"[MT4 Commands] JSON serialization error: {json_err}")
+            # 如果序列化失败，返回空命令列表
+            response_data = {
+                'commands': [],
+                'server_ts': int(time.time()),
+                'queue_len': 0,
+                'error': 'Serialization error',
+            }
+        
+        response = jsonify(response_data)
         response.headers['Content-Type'] = 'application/json'
         return response
     except Exception as e:
         import traceback
         error_msg = str(e)
         traceback_str = traceback.format_exc()
-        print(f"[MT4 Commands] Error: {error_msg}\n{traceback_str}")
-        response = jsonify({
-            'error': 'Internal server error',
-            'message': error_msg,
-            'commands': [],
-            'server_ts': int(time.time()),
-            'queue_len': 0,
-        })
-        response.headers['Content-Type'] = 'application/json'
-        return response, 500
+        print(f"[MT4 Commands] Fatal error: {error_msg}\n{traceback_str}")
+        try:
+            response = jsonify({
+                'error': 'Internal server error',
+                'message': error_msg,
+                'commands': [],
+                'server_ts': int(time.time()),
+                'queue_len': 0,
+            })
+            response.headers['Content-Type'] = 'application/json'
+            return response, 500
+        except Exception as final_err:
+            # 如果连错误响应都无法创建，返回最简单的响应
+            print(f"[MT4 Commands] Cannot create error response: {final_err}")
+            from flask import Response
+            return Response(
+                '{"error":"Internal server error","commands":[],"server_ts":0,"queue_len":0}',
+                status=500,
+                mimetype='application/json'
+            )
 
 @app.route('/web/api/mt4/status', methods=['POST'])
 def post_status():
