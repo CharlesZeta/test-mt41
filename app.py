@@ -132,55 +132,95 @@ def cleanup_expired_commands():
 cleanup_thread = threading.Thread(target=cleanup_expired_commands, daemon=True)
 cleanup_thread.start()
 
+# ==================== 工具函数：日志记录 ====================
+
+def log_request(route_name):
+    """记录请求信息"""
+    try:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        remote_addr = request.remote_addr or 'unknown'
+        method = request.method
+        path = request.path
+        headers = dict(request.headers)
+        
+        # 获取请求体（前500字节）
+        try:
+            body_data = request.get_data(as_text=True)
+            if body_data:
+                body_preview = body_data[:500]
+            else:
+                body_preview = "(empty)"
+        except:
+            body_preview = "(无法读取)"
+        
+        print(f"[{timestamp}] [{route_name}] {method} {path}")
+        print(f"  Remote: {remote_addr}")
+        print(f"  Headers: {headers}")
+        print(f"  Body (first 500 bytes): {body_preview}")
+    except Exception as log_err:
+        print(f"[LOG ERROR] Failed to log request: {log_err}")
+
+def safe_json_response(ok, data=None, error=None, trace=None, status_code=200):
+    """安全创建 JSON 响应"""
+    try:
+        response_data = {'ok': ok}
+        if data:
+            response_data.update(data)
+        if error:
+            response_data['error'] = error
+        if trace:
+            response_data['trace'] = trace
+        
+        response = jsonify(response_data)
+        response.headers['Content-Type'] = 'application/json'
+        return response, status_code
+    except Exception as e:
+        # 如果连 JSON 响应都无法创建，返回最简单的响应
+        print(f"[CRITICAL] Cannot create JSON response: {e}")
+        from flask import Response
+        return Response(
+            '{"ok":false,"error":"Internal error"}',
+            status=200,
+            mimetype='application/json'
+        )
+
 # ==================== 全局错误处理 ====================
 
 @app.errorhandler(404)
 def not_found(error):
     """404错误返回JSON"""
-    response = jsonify({'error': 'Not found', 'path': request.path})
-    response.headers['Content-Type'] = 'application/json'
-    return response, 404
+    return safe_json_response(False, error='Not found', status_code=404)
 
 @app.errorhandler(405)
 def method_not_allowed(error):
     """405错误返回JSON"""
-    response = jsonify({'error': 'Method not allowed', 'method': request.method})
-    response.headers['Content-Type'] = 'application/json'
-    return response, 405
-
-@app.errorhandler(500)
-def internal_error(error):
-    """500错误返回JSON"""
-    import traceback
-    error_msg = str(error)
-    traceback_str = traceback.format_exc()
-    print(f"Internal error: {error_msg}\n{traceback_str}")
-    response = jsonify({
-        'error': 'Internal server error',
-        'message': error_msg
-    })
-    response.headers['Content-Type'] = 'application/json'
-    return response, 500
+    return safe_json_response(False, error='Method not allowed', status_code=405)
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    """捕获所有未处理的异常，返回JSON"""
+    """捕获所有未处理的异常，返回JSON（状态码200避免MT4异常）"""
     import traceback
     error_msg = str(e)
+    error_type = e.__class__.__name__
     traceback_str = traceback.format_exc()
-    print(f"Unhandled exception: {error_msg}\n{traceback_str}")
-    response = jsonify({
-        'error': 'Internal server error',
-        'message': error_msg
-    })
-    response.headers['Content-Type'] = 'application/json'
-    return response, 500
+    
+    # 打印完整 traceback 到控制台
+    print(f"[GLOBAL ERROR HANDLER] {error_type}: {error_msg}")
+    print(traceback_str)
+    
+    # 返回 JSON 错误结构，状态码 200（避免 MT4 逻辑异常）
+    return safe_json_response(
+        ok=False,
+        error=error_msg,
+        trace=error_type
+    )
 
 # ==================== MT4 API 接口（仅JSON，路径：/web/api/mt4/...）===================
 
 @app.route('/web/api/mt4/commands', methods=['GET', 'POST'])
 def get_commands():
     """MT4 轮询拉取命令 - 支持GET和POST"""
+    log_request('get_commands')
     try:
         # 优先从POST JSON获取，其次从GET参数获取
         try:
@@ -330,184 +370,219 @@ def get_commands():
     except Exception as e:
         import traceback
         error_msg = str(e)
+        error_type = e.__class__.__name__
         traceback_str = traceback.format_exc()
-        print(f"[MT4 Commands] Fatal error: {error_msg}\n{traceback_str}")
-        try:
-            response = jsonify({
-                'error': 'Internal server error',
-                'message': error_msg,
+        print(f"[MT4 Commands] Fatal error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(
+            ok=False,
+            data={
                 'commands': [],
                 'server_ts': int(time.time()),
                 'queue_len': 0,
-            })
-            response.headers['Content-Type'] = 'application/json'
-            return response, 500
-        except Exception as final_err:
-            # 如果连错误响应都无法创建，返回最简单的响应
-            print(f"[MT4 Commands] Cannot create error response: {final_err}")
-            from flask import Response
-            return Response(
-                '{"error":"Internal server error","commands":[],"server_ts":0,"queue_len":0}',
-                status=500,
-                mimetype='application/json'
-            )
+            },
+            error=error_msg,
+            trace=error_type
+        )
 
 @app.route('/web/api/mt4/status', methods=['POST'])
 def post_status():
     """MT4 上报状态"""
-    data = request.get_json() or {}
-    account = data.get('account', '')
-    
-    if not account:
-        response = jsonify({'error': 'account required'})
-        response.headers['Content-Type'] = 'application/json'
-        return response, 400
-    
-    with data_lock:
-        latest_status[account] = {
-            **data,
-            'updated_at': time.time(),
-        }
-    
-    response = jsonify({'ok': True})
-    response.headers['Content-Type'] = 'application/json'
-    return response
+    log_request('post_status')
+    try:
+        data = request.get_json(silent=True)
+        if not data:
+            return safe_json_response(ok=False, error='invalid json')
+        
+        account = data.get('account', '')
+        
+        if not account:
+            return safe_json_response(ok=False, error='account required')
+        
+        with data_lock:
+            if account not in latest_status:
+                latest_status[account] = {}
+            latest_status[account].update({
+                **data,
+                'updated_at': time.time(),
+            })
+        
+        return safe_json_response(ok=True)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Status] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
 @app.route('/web/api/mt4/report', methods=['POST'])
 def post_report():
     """MT4 上报执行结果"""
-    data = request.get_json() or {}
-    account = data.get('account', '')
-    cmd_id = data.get('cmd_id', '')
-    nonce = data.get('nonce', '')
-    
-    if not account or not cmd_id:
-        response = jsonify({'error': 'account and cmd_id required'})
-        response.headers['Content-Type'] = 'application/json'
-        return response, 400
-    
-    with data_lock:
-        # 校验 cmd_id 和 nonce
-        if cmd_id in command_states:
-            state = command_states[cmd_id]
-            
-            # 获取原始命令的 nonce 进行校验
-            original_nonce = ''
-            if 'command' in state and 'nonce' in state['command']:
-                original_nonce = state['command']['nonce']
-            
-            # 校验 nonce（如果提供了）
-            nonce_valid = True
-            if nonce and original_nonce and nonce != original_nonce:
-                nonce_valid = False
-                state['state'] = 'INVALID_NONCE'
-                metrics['error_count'] += 1
-                metrics['last_error'] = f'Nonce mismatch for cmd_id: {cmd_id}'
-                metrics['last_error_time'] = time.time()
-            else:
-                state['state'] = 'REPORTED'
-            
-            state['report'] = data
-            state['reported_at'] = time.time()
-            
-            # 计算延迟
-            if 'delivered_at' in state:
-                state['latency_est_ms'] = (state['reported_at'] - state['delivered_at']) * 1000
-            
-            ok = data.get('ok', False)
-            if ok and nonce_valid:
-                metrics['executed_count'] += 1
-            elif not nonce_valid:
-                # nonce 不匹配已在上面处理
-                pass
-            else:
-                metrics['error_count'] += 1
-                metrics['last_error'] = data.get('error', 'unknown')
-                metrics['last_error_time'] = time.time()
-        else:
-            # 未知命令 ID
-            state = {
-                'state': 'INVALID_REPORT',
-                'report': data,
-                'reported_at': time.time(),
-            }
-            command_states[cmd_id] = state
-            metrics['error_count'] += 1
-            metrics['last_error'] = f'Unknown cmd_id: {cmd_id}'
-            metrics['last_error_time'] = time.time()
+    log_request('post_report')
+    try:
+        data = request.get_json(silent=True)
+        if not data:
+            return safe_json_response(ok=False, error='invalid json')
         
-        # 保存到回报列表
-        reports[account].append({
-            **data,
-            'timestamp': time.time(),
-        })
-    
-    response = jsonify({'ok': True})
-    response.headers['Content-Type'] = 'application/json'
-    return response
+        account = data.get('account', '')
+        cmd_id = data.get('cmd_id', '')
+        nonce = data.get('nonce', '')
+        
+        if not account or not cmd_id:
+            return safe_json_response(ok=False, error='account and cmd_id required')
+        
+        with data_lock:
+            # 校验 cmd_id 和 nonce
+            if cmd_id in command_states:
+                state = command_states[cmd_id]
+                
+                # 获取原始命令的 nonce 进行校验
+                original_nonce = ''
+                if 'command' in state and 'nonce' in state['command']:
+                    original_nonce = state['command']['nonce']
+                
+                # 校验 nonce（如果提供了）
+                nonce_valid = True
+                if nonce and original_nonce and nonce != original_nonce:
+                    nonce_valid = False
+                    state['state'] = 'INVALID_NONCE'
+                    metrics['error_count'] += 1
+                    metrics['last_error'] = f'Nonce mismatch for cmd_id: {cmd_id}'
+                    metrics['last_error_time'] = time.time()
+                else:
+                    state['state'] = 'REPORTED'
+                
+                state['report'] = data
+                state['reported_at'] = time.time()
+                
+                # 计算延迟
+                if 'delivered_at' in state:
+                    state['latency_est_ms'] = (state['reported_at'] - state['delivered_at']) * 1000
+                
+                ok = data.get('ok', False)
+                if ok and nonce_valid:
+                    metrics['executed_count'] += 1
+                elif not nonce_valid:
+                    # nonce 不匹配已在上面处理
+                    pass
+                else:
+                    metrics['error_count'] += 1
+                    metrics['last_error'] = data.get('error', 'unknown')
+                    metrics['last_error_time'] = time.time()
+            else:
+                # 未知命令 ID
+                state = {
+                    'state': 'INVALID_REPORT',
+                    'report': data,
+                    'reported_at': time.time(),
+                }
+                command_states[cmd_id] = state
+                metrics['error_count'] += 1
+                metrics['last_error'] = f'Unknown cmd_id: {cmd_id}'
+                metrics['last_error_time'] = time.time()
+            
+            # 保存到回报列表（使用 .get() 安全访问）
+            if account not in reports:
+                reports[account] = deque(maxlen=100)
+            reports[account].append({
+                **data,
+                'timestamp': time.time(),
+            })
+        
+        return safe_json_response(ok=True)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Report] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
 @app.route('/web/api/mt4/quote', methods=['POST'])
 def post_quote():
     """MT4 上报报价"""
-    data = request.get_json() or {}
-    account = data.get('account', '')
-    
-    if not account:
-        response = jsonify({'error': 'account required'})
-        response.headers['Content-Type'] = 'application/json'
-        return response, 400
-    
-    with data_lock:
-        quotes[account].append({
-            **data,
-            'timestamp': time.time(),
-        })
-    
-    response = jsonify({'ok': True})
-    response.headers['Content-Type'] = 'application/json'
-    return response
+    log_request('post_quote')
+    try:
+        data = request.get_json(silent=True)
+        if not data:
+            return safe_json_response(ok=False, error='invalid json')
+        
+        account = data.get('account', '')
+        
+        if not account:
+            return safe_json_response(ok=False, error='account required')
+        
+        with data_lock:
+            if account not in quotes:
+                quotes[account] = deque(maxlen=50)
+            quotes[account].append({
+                **data,
+                'timestamp': time.time(),
+            })
+        
+        return safe_json_response(ok=True)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Quote] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
 @app.route('/web/api/mt4/positions', methods=['POST'])
 def post_positions():
     """MT4 上报持仓"""
-    data = request.get_json() or {}
-    account = data.get('account', '')
-    
-    if not account:
-        response = jsonify({'error': 'account required'})
-        response.headers['Content-Type'] = 'application/json'
-        return response, 400
-    
-    with data_lock:
-        positions_data[account] = {
-            **data,
-            'updated_at': time.time(),
-        }
-    
-    response = jsonify({'ok': True})
-    response.headers['Content-Type'] = 'application/json'
-    return response
+    log_request('post_positions')
+    try:
+        data = request.get_json(silent=True)
+        if not data:
+            return safe_json_response(ok=False, error='invalid json')
+        
+        account = data.get('account', '')
+        
+        if not account:
+            return safe_json_response(ok=False, error='account required')
+        
+        with data_lock:
+            positions_data[account] = {
+                **data,
+                'updated_at': time.time(),
+            }
+        
+        return safe_json_response(ok=True)
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[MT4 Positions] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
 # ==================== 前端 Web API 接口（仅JSON，路径：/web/api/...）===================
 
 @app.route('/web/api/command', methods=['POST'])
 def create_command():
     """创建命令（网页端调用）"""
+    log_request('create_command')
     try:
         # 检查Content-Type
         if not request.is_json:
-            response = jsonify({'error': 'Content-Type must be application/json'})
-            response.headers['Content-Type'] = 'application/json'
-            return response, 400
+            return safe_json_response(ok=False, error='Content-Type must be application/json')
         
-        data = request.get_json() or {}
+        data = request.get_json(silent=True)
+        if not data:
+            return safe_json_response(ok=False, error='invalid json')
+        
         account = data.get('account', '')
         action = data.get('action', '')
         
         if not account or not action:
-            response = jsonify({'error': 'account and action required'})
-            response.headers['Content-Type'] = 'application/json'
-            return response, 400
+            return safe_json_response(ok=False, error='account and action required')
         
         # 生成命令 ID 和 nonce
         cmd_id = generate_cmd_id()
@@ -519,8 +594,11 @@ def create_command():
         deduped = False
         
         with data_lock:
-            # 检查去重窗口
+            # 检查去重窗口（使用 .get() 安全访问）
+            if account not in dedupe_cache:
+                dedupe_cache[account] = {}
             cache = dedupe_cache[account]
+            
             if dedupe_hash in cache:
                 existing_cmd_id, _ = cache[dedupe_hash]
                 # 如果命令还在队列中，返回已存在的 cmd_id
@@ -533,8 +611,9 @@ def create_command():
                         if 'command' in state and 'nonce' in state['command']:
                             nonce = state['command']['nonce']
                         else:
-                            # 如果找不到，从队列中查找
-                            for cmd in command_queues[account]:
+                            # 如果找不到，从队列中查找（使用 .get() 安全访问）
+                            queue = command_queues.get(account, deque())
+                            for cmd in queue:
                                 if cmd.get('id') == existing_cmd_id:
                                     nonce = cmd.get('nonce', '')
                                     break
@@ -551,7 +630,9 @@ def create_command():
                     **{k: v for k, v in data.items() if k not in ['account', 'action', 'ttl_sec']}
                 }
                 
-                # 入队
+                # 入队（使用 .get() 安全访问）
+                if account not in command_queues:
+                    command_queues[account] = deque(maxlen=1000)
                 command_queues[account].append(command)
                 
                 # 记录状态
@@ -570,118 +651,198 @@ def create_command():
             else:
                 metrics['dedupe_hits'] += 1
         
-        response = jsonify({
-            'ok': True,
+        return safe_json_response(ok=True, data={
             'id': cmd_id,
             'nonce': nonce,
             'deduped': deduped,
         })
-        response.headers['Content-Type'] = 'application/json'
-        return response
     except Exception as e:
         import traceback
         error_msg = str(e)
+        error_type = e.__class__.__name__
         traceback_str = traceback.format_exc()
-        print(f"create_command error: {error_msg}\n{traceback_str}")
-        response = jsonify({
-            'ok': False,
-            'error': error_msg
-        })
-        response.headers['Content-Type'] = 'application/json'
-        return response, 500
+        print(f"[Create Command] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
 @app.route('/web/api/data', methods=['GET'])
 def get_data():
     """获取数据（供前端拉取）"""
-    account = request.args.get('account', '')
-    
-    with data_lock:
-        # 获取命令状态列表（最近100条）
-        recent_states = sorted(
-            command_states.items(),
-            key=lambda x: x[1].get('created_at', 0),
-            reverse=True
-        )[:100]
+    log_request('get_data')
+    try:
+        account = request.args.get('account', '')
         
-        commands_list = []
-        for cmd_id, state in recent_states:
-            cmd_data = {
-                'cmd_id': cmd_id,
-                'state': state.get('state', 'UNKNOWN'),
-                'action': state.get('action', ''),
-                'symbol': state.get('symbol', ''),
-                'created_at': state.get('created_at', 0),
-                'delivered_at': state.get('delivered_at', 0),
-                'reported_at': state.get('reported_at', 0),
-                'latency_est_ms': state.get('latency_est_ms', 0),
-            }
-            if 'report' in state:
-                report = state['report']
-                cmd_data['ok'] = report.get('ok', False)
-                cmd_data['message'] = report.get('message', '')
-                cmd_data['ticket'] = report.get('ticket', '')
-                cmd_data['error'] = report.get('error', '')
-            commands_list.append(cmd_data)
+        with data_lock:
+            # 获取命令状态列表（最近100条）
+            recent_states = sorted(
+                command_states.items(),
+                key=lambda x: x[1].get('created_at', 0),
+                reverse=True
+            )[:100]
+            
+            commands_list = []
+            for cmd_id, state in recent_states:
+                cmd_data = {
+                    'cmd_id': cmd_id,
+                    'state': state.get('state', 'UNKNOWN'),
+                    'action': state.get('action', ''),
+                    'symbol': state.get('symbol', ''),
+                    'created_at': state.get('created_at', 0),
+                    'delivered_at': state.get('delivered_at', 0),
+                    'reported_at': state.get('reported_at', 0),
+                    'latency_est_ms': state.get('latency_est_ms', 0),
+                }
+                if 'report' in state:
+                    report = state['report']
+                    cmd_data['ok'] = report.get('ok', False)
+                    cmd_data['message'] = report.get('message', '')
+                    cmd_data['ticket'] = report.get('ticket', '')
+                    cmd_data['error'] = report.get('error', '')
+                commands_list.append(cmd_data)
+            
+            # 获取账户状态（使用 .get() 安全访问）
+            status = latest_status.get(account, {})
+            
+            # 获取回报列表（使用 .get() 安全访问）
+            reports_list = list(reports.get(account, deque()))[-20:]
+            
+            # 获取报价列表（使用 .get() 安全访问）
+            quotes_list = list(quotes.get(account, deque()))[-10:]
+            
+            # 获取持仓（使用 .get() 安全访问）
+            positions = positions_data.get(account, {}).get('positions', [])
+            
+            # 计算统计（使用 .get() 安全访问）
+            queue_len = len(command_queues.get(account, deque()))
+            
+            # 最近1分钟的命令统计
+            now = time.time()
+            recent_commands = [
+                s for s in recent_states
+                if s[1].get('created_at', 0) > now - 60
+            ]
+            recent_success = sum(
+                1 for _, s in recent_commands
+                if s.get('report', {}).get('ok', False)
+            )
+            recent_total = len(recent_commands)
+            success_rate = (recent_success / recent_total * 100) if recent_total > 0 else 0
+            
+            # 平均延迟
+            latencies = [
+                s[1].get('latency_est_ms', 0)
+                for _, s in recent_states
+                if s[1].get('latency_est_ms', 0) > 0
+            ]
+            avg_latency = sum(latencies) / len(latencies) if latencies else 0
         
-        # 获取账户状态
-        status = latest_status.get(account, {})
+        return safe_json_response(ok=True, data={
+            'status': status,
+            'commands': commands_list,
+            'reports': reports_list,
+            'quotes': quotes_list,
+            'positions': positions,
+            'metrics': {
+                'queue_len': queue_len,
+                'total_commands': metrics['total_commands'],
+                'dedupe_hits': metrics['dedupe_hits'],
+                'delivered_count': metrics['delivered_count'],
+                'executed_count': metrics['executed_count'],
+                'error_count': metrics['error_count'],
+                'last_error': metrics['last_error'],
+                'last_error_time': metrics['last_error_time'],
+                'recent_commands_1min': recent_total,
+                'success_rate_1min': round(success_rate, 2),
+                'avg_latency_ms': round(avg_latency, 2),
+            },
+            'server_ts': time.time(),
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Get Data] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
+# ==================== 健康检查和调试接口 ====================
+
+@app.route('/web/api/health', methods=['GET'])
+def health_check():
+    """健康检查接口"""
+    try:
+        instance_id = str(uuid.uuid4())[:8]
+        return safe_json_response(ok=True, data={
+            'server_time': datetime.now().isoformat(),
+            'instance_id': instance_id,
+            'timestamp': time.time(),
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Health Check] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
+@app.route('/web/api/debug/queues', methods=['GET'])
+def debug_queues():
+    """调试接口：查看队列状态"""
+    log_request('debug_queues')
+    try:
+        with data_lock:
+            # 所有账户队列长度
+            queue_info = {}
+            for account, queue in command_queues.items():
+                queue_info[account] = {
+                    'queue_len': len(queue),
+                    'queue_items': [cmd.get('id', 'unknown') for cmd in list(queue)[:10]]  # 最近10条
+                }
+            
+            # 最近命令列表（最近20条）
+            recent_commands = []
+            sorted_states = sorted(
+                command_states.items(),
+                key=lambda x: x[1].get('created_at', 0),
+                reverse=True
+            )[:20]
+            for cmd_id, state in sorted_states:
+                recent_commands.append({
+                    'cmd_id': cmd_id,
+                    'state': state.get('state', 'UNKNOWN'),
+                    'action': state.get('action', ''),
+                    'created_at': state.get('created_at', 0),
+                })
+            
+            # 最近 report 列表（最近20条）
+            recent_reports = []
+            for account, report_queue in reports.items():
+                for report in list(report_queue)[-10:]:  # 每个账户最近10条
+                    recent_reports.append({
+                        'account': account,
+                        'cmd_id': report.get('cmd_id', ''),
+                        'ok': report.get('ok', False),
+                        'timestamp': report.get('timestamp', 0),
+                    })
+            recent_reports = sorted(recent_reports, key=lambda x: x.get('timestamp', 0), reverse=True)[:20]
         
-        # 获取回报列表
-        reports_list = list(reports.get(account, deque()))[-20:]
-        
-        # 获取报价列表
-        quotes_list = list(quotes.get(account, deque()))[-10:]
-        
-        # 获取持仓
-        positions = positions_data.get(account, {}).get('positions', [])
-        
-        # 计算统计
-        queue_len = len(command_queues.get(account, deque()))
-        
-        # 最近1分钟的命令统计
-        now = time.time()
-        recent_commands = [
-            s for s in recent_states
-            if s[1].get('created_at', 0) > now - 60
-        ]
-        recent_success = sum(
-            1 for _, s in recent_commands
-            if s.get('report', {}).get('ok', False)
-        )
-        recent_total = len(recent_commands)
-        success_rate = (recent_success / recent_total * 100) if recent_total > 0 else 0
-        
-        # 平均延迟
-        latencies = [
-            s[1].get('latency_est_ms', 0)
-            for _, s in recent_states
-            if s[1].get('latency_est_ms', 0) > 0
-        ]
-        avg_latency = sum(latencies) / len(latencies) if latencies else 0
-    
-    response = jsonify({
-        'status': status,
-        'commands': commands_list,
-        'reports': reports_list,
-        'quotes': quotes_list,
-        'positions': positions,
-        'metrics': {
-            'queue_len': queue_len,
-            'total_commands': metrics['total_commands'],
-            'dedupe_hits': metrics['dedupe_hits'],
-            'delivered_count': metrics['delivered_count'],
-            'executed_count': metrics['executed_count'],
-            'error_count': metrics['error_count'],
-            'last_error': metrics['last_error'],
-            'last_error_time': metrics['last_error_time'],
-            'recent_commands_1min': recent_total,
-            'success_rate_1min': round(success_rate, 2),
-            'avg_latency_ms': round(avg_latency, 2),
-        },
-        'server_ts': time.time(),
-    })
-    response.headers['Content-Type'] = 'application/json'
-    return response
+        return safe_json_response(ok=True, data={
+            'queues': queue_info,
+            'recent_commands': recent_commands,
+            'recent_reports': recent_reports,
+            'total_accounts': len(command_queues),
+            'total_command_states': len(command_states),
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Debug Queues] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
 # ==================== 可视化页面 ====================
 
