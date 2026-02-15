@@ -2144,6 +2144,590 @@ def create_command():
         return jsonify({"status": "error", "message": str(e)}), 400
 
 
+@app.route('/test')
+def mt4_test_page():
+    """MT4 交易信号测试工具页面"""
+    return render_template_string('''
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT4 交易信号测试工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+            font-size: 14px;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .form-group.required label::after {
+            content: " *";
+            color: #e74c3c;
+        }
+
+        .command-params {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border: 2px dashed #dee2e6;
+        }
+
+        .command-params.hidden {
+            display: none;
+        }
+
+        .command-params h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .result {
+            margin-top: 25px;
+            padding: 20px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .result.success {
+            background: #d4edda;
+            border: 2px solid #c3e6cb;
+            color: #155724;
+            display: block;
+        }
+
+        .result.error {
+            background: #f8d7da;
+            border: 2px solid #f5c6cb;
+            color: #721c24;
+            display: block;
+        }
+
+        .result h3 {
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .result pre {
+            background: rgba(0,0,0,0.05);
+            padding: 15px;
+            border-radius: 5px;
+            overflow-x: auto;
+            font-size: 12px;
+            line-height: 1.5;
+            margin-top: 10px;
+        }
+
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .info-box strong {
+            color: #1976D2;
+        }
+
+        .symbols-input {
+            font-family: monospace;
+        }
+
+        .symbols-hint {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .help-text {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 MT4 交易信号测试工具</h1>
+            <p>向 MT4 Trading EA 发送测试命令</p>
+        </div>
+
+        <div class="content">
+            <div class="info-box">
+                <strong>使用说明：</strong><br>
+                1. 输入账户ID（MT4账户号码）<br>
+                2. 选择命令类型，填写相应参数<br>
+                3. 点击"发送命令"按钮，MT4 EA 将在下次轮询时获取并执行
+            </div>
+
+            <form id="commandForm">
+                <div class="form-group">
+                    <label for="accountId" class="required">账户ID</label>
+                    <input type="number" id="accountId" placeholder="例如: 123456" required>
+                    <div class="help-text">MT4 账户号码（EA 中 AccountID 参数）</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="action" class="required">命令类型</label>
+                    <select id="action" required>
+                        <option value="">-- 请选择命令类型 --</option>
+                        <option value="QUOTE">QUOTE - 请求报价</option>
+                        <option value="MARKET">MARKET - 市价单</option>
+                        <option value="LIMIT">LIMIT - 限价单</option>
+                        <option value="CLOSE">CLOSE - 平仓</option>
+                        <option value="MODIFY">MODIFY - 修改订单</option>
+                    </select>
+                </div>
+
+                <!-- QUOTE 参数 -->
+                <div id="params-QUOTE" class="command-params hidden">
+                    <h3>📊 QUOTE 命令参数</h3>
+                    <div class="form-group">
+                        <label for="quote_symbols" class="required">交易品种列表</label>
+                        <textarea id="quote_symbols" rows="3" placeholder="EURUSD, XAUUSD, GBPUSD" class="symbols-input"></textarea>
+                        <div class="symbols-hint">多个品种用逗号分隔，例如：EURUSD, XAUUSD, GBPUSD</div>
+                    </div>
+                </div>
+
+                <!-- MARKET 参数 -->
+                <div id="params-MARKET" class="command-params hidden">
+                    <h3>📈 MARKET 命令参数</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="market_symbol" class="required">交易品种</label>
+                            <input type="text" id="market_symbol" placeholder="EURUSD" style="text-transform: uppercase;">
+                        </div>
+                        <div class="form-group">
+                            <label for="market_side" class="required">方向</label>
+                            <select id="market_side">
+                                <option value="BUY">BUY - 买入</option>
+                                <option value="SELL">SELL - 卖出</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="market_risk_alloc" class="required">风险分配比例 (%)</label>
+                            <input type="number" id="market_risk_alloc" step="0.01" min="0.01" max="100" value="2" placeholder="2">
+                            <div class="help-text">开仓占资金比例，例如 2 表示 2%</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="market_max_spread" class="required">最大点差 (points)</label>
+                            <input type="number" id="market_max_spread" min="1" value="15" placeholder="15">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="market_sl_points">止损点数 (points)</label>
+                            <input type="number" id="market_sl_points" min="1" value="200" placeholder="200">
+                            <div class="help-text">0 表示不设置止损</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="market_tp_points">止盈点数 (points)</label>
+                            <input type="number" id="market_tp_points" min="1" value="300" placeholder="300">
+                            <div class="help-text">0 表示不设置止盈</div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="market_target_leverage">目标杠杆</label>
+                        <input type="number" id="market_target_leverage" step="0.1" min="1" value="5" placeholder="5">
+                        <div class="help-text">可选，EA 用仓位控制模拟</div>
+                    </div>
+                </div>
+
+                <!-- LIMIT 参数 -->
+                <div id="params-LIMIT" class="command-params hidden">
+                    <h3>⏰ LIMIT 命令参数</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="limit_symbol" class="required">交易品种</label>
+                            <input type="text" id="limit_symbol" placeholder="EURUSD" style="text-transform: uppercase;">
+                        </div>
+                        <div class="form-group">
+                            <label for="limit_side" class="required">方向</label>
+                            <select id="limit_side">
+                                <option value="BUY">BUY - 买入限价</option>
+                                <option value="SELL">SELL - 卖出限价</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="limit_volume" class="required">手数</label>
+                            <input type="number" id="limit_volume" step="0.01" min="0.01" value="0.1" placeholder="0.1">
+                        </div>
+                        <div class="form-group">
+                            <label for="limit_price" class="required">挂单价格</label>
+                            <input type="number" id="limit_price" step="0.00001" placeholder="1.09000">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="limit_sl">止损价格</label>
+                            <input type="number" id="limit_sl" step="0.00001" placeholder="1.08300">
+                            <div class="help-text">0 表示不设置止损</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="limit_tp">止盈价格</label>
+                            <input type="number" id="limit_tp" step="0.00001" placeholder="1.08800">
+                            <div class="help-text">0 表示不设置止盈</div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="limit_max_spread" class="required">最大点差 (points)</label>
+                        <input type="number" id="limit_max_spread" min="1" value="20" placeholder="20">
+                    </div>
+                </div>
+
+                <!-- CLOSE 参数 -->
+                <div id="params-CLOSE" class="command-params hidden">
+                    <h3>🔒 CLOSE 命令参数</h3>
+                    <div class="form-group">
+                        <label for="close_ticket" class="required">订单票号 (Ticket)</label>
+                        <input type="number" id="close_ticket" min="1" placeholder="987654">
+                        <div class="help-text">要平仓的订单票号</div>
+                    </div>
+                </div>
+
+                <!-- MODIFY 参数 -->
+                <div id="params-MODIFY" class="command-params hidden">
+                    <h3>✏️ MODIFY 命令参数</h3>
+                    <div class="form-group">
+                        <label for="modify_ticket" class="required">订单票号 (Ticket)</label>
+                        <input type="number" id="modify_ticket" min="1" placeholder="987654">
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="modify_sl">新止损价格</label>
+                            <input type="number" id="modify_sl" step="0.00001" placeholder="1.08300">
+                            <div class="help-text">0 表示不修改止损</div>
+                        </div>
+                        <div class="form-group">
+                            <label for="modify_tp">新止盈价格</label>
+                            <input type="number" id="modify_tp" step="0.00001" placeholder="1.08800">
+                            <div class="help-text">0 表示不修改止盈</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="loading" id="loading">
+                    <div class="spinner"></div>
+                    <div>正在发送命令...</div>
+                </div>
+
+                <button type="submit" class="btn" id="submitBtn">发送命令</button>
+            </form>
+
+            <div id="result" class="result"></div>
+        </div>
+    </div>
+
+    <script>
+        const actionSelect = document.getElementById('action');
+        const form = document.getElementById('commandForm');
+        const resultDiv = document.getElementById('result');
+        const loadingDiv = document.getElementById('loading');
+        const submitBtn = document.getElementById('submitBtn');
+
+        // 切换命令参数面板
+        actionSelect.addEventListener('change', function() {
+            // 隐藏所有参数面板
+            document.querySelectorAll('.command-params').forEach(panel => {
+                panel.classList.add('hidden');
+            });
+
+            // 显示选中的参数面板
+            const selectedAction = this.value;
+            if (selectedAction) {
+                const paramsPanel = document.getElementById(`params-${selectedAction}`);
+                if (paramsPanel) {
+                    paramsPanel.classList.remove('hidden');
+                }
+            }
+        });
+
+        // 自动转大写交易品种
+        document.querySelectorAll('input[type="text"][id*="symbol"]').forEach(input => {
+            input.addEventListener('input', function() {
+                this.value = this.value.toUpperCase();
+            });
+        });
+
+        // 表单提交
+        form.addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const accountId = parseInt(document.getElementById('accountId').value);
+            const action = actionSelect.value;
+
+            if (!accountId || !action) {
+                showResult('error', '请填写所有必填字段');
+                return;
+            }
+
+            // 构建命令数据
+            const cmdData = {
+                account: accountId,
+                action: action
+            };
+
+            // 根据命令类型添加参数
+            try {
+                switch(action) {
+                    case 'QUOTE':
+                        const symbolsText = document.getElementById('quote_symbols').value.trim();
+                        if (!symbolsText) {
+                            showResult('error', '请填写交易品种列表');
+                            return;
+                        }
+                        cmdData.symbols = symbolsText.split(',').map(s => s.trim()).filter(s => s);
+                        break;
+
+                    case 'MARKET':
+                        cmdData.symbol = document.getElementById('market_symbol').value.trim();
+                        cmdData.side = document.getElementById('market_side').value;
+                        cmdData.risk_alloc_pct = parseFloat(document.getElementById('market_risk_alloc').value);
+                        cmdData.max_spread_points = parseInt(document.getElementById('market_max_spread').value);
+                        const slPoints = parseInt(document.getElementById('market_sl_points').value) || 0;
+                        const tpPoints = parseInt(document.getElementById('market_tp_points').value) || 0;
+                        if (slPoints > 0) cmdData.sl_points = slPoints;
+                        if (tpPoints > 0) cmdData.tp_points = tpPoints;
+                        const targetLeverage = parseFloat(document.getElementById('market_target_leverage').value);
+                        if (targetLeverage > 0) cmdData.target_leverage = targetLeverage;
+                        break;
+
+                    case 'LIMIT':
+                        cmdData.symbol = document.getElementById('limit_symbol').value.trim();
+                        cmdData.side = document.getElementById('limit_side').value;
+                        cmdData.volume = parseFloat(document.getElementById('limit_volume').value);
+                        cmdData.price = parseFloat(document.getElementById('limit_price').value);
+                        cmdData.max_spread_points = parseInt(document.getElementById('limit_max_spread').value);
+                        const limitSl = parseFloat(document.getElementById('limit_sl').value) || 0;
+                        const limitTp = parseFloat(document.getElementById('limit_tp').value) || 0;
+                        if (limitSl > 0) cmdData.sl = limitSl;
+                        if (limitTp > 0) cmdData.tp = limitTp;
+                        break;
+
+                    case 'CLOSE':
+                        cmdData.ticket = parseInt(document.getElementById('close_ticket').value);
+                        if (!cmdData.ticket) {
+                            showResult('error', '请填写订单票号');
+                            return;
+                        }
+                        break;
+
+                    case 'MODIFY':
+                        cmdData.ticket = parseInt(document.getElementById('modify_ticket').value);
+                        if (!cmdData.ticket) {
+                            showResult('error', '请填写订单票号');
+                            return;
+                        }
+                        const modifySl = parseFloat(document.getElementById('modify_sl').value) || 0;
+                        const modifyTp = parseFloat(document.getElementById('modify_tp').value) || 0;
+                        if (modifySl > 0) cmdData.sl = modifySl;
+                        if (modifyTp > 0) cmdData.tp = modifyTp;
+                        break;
+                }
+
+                // 验证必填字段
+                if (action === 'MARKET' && (!cmdData.symbol || !cmdData.side || !cmdData.risk_alloc_pct)) {
+                    showResult('error', 'MARKET 命令缺少必填参数');
+                    return;
+                }
+                if (action === 'LIMIT' && (!cmdData.symbol || !cmdData.side || !cmdData.volume || !cmdData.price)) {
+                    showResult('error', 'LIMIT 命令缺少必填参数');
+                    return;
+                }
+
+            } catch (error) {
+                showResult('error', '参数格式错误: ' + error.message);
+                return;
+            }
+
+            // 发送请求
+            submitBtn.disabled = true;
+            loadingDiv.classList.add('active');
+            resultDiv.className = 'result';
+
+            try {
+                const response = await fetch('/api/command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(cmdData)
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.status === 'success') {
+                    showResult('success', '命令发送成功！', {
+                        cmd_id: result.cmd_id,
+                        command: result.command,
+                        full_response: result
+                    });
+                } else {
+                    showResult('error', result.message || '命令发送失败', result);
+                }
+            } catch (error) {
+                showResult('error', '网络错误: ' + error.message, error);
+            } finally {
+                submitBtn.disabled = false;
+                loadingDiv.classList.remove('active');
+            }
+        });
+
+        function showResult(type, message, data = null) {
+            resultDiv.className = `result ${type}`;
+            let html = `<h3>${type === 'success' ? '✅ 成功' : '❌ 错误'}</h3>`;
+            html += `<p><strong>${message}</strong></p>`;
+            
+            if (data) {
+                html += '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            }
+            
+            resultDiv.innerHTML = html;
+            resultDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    </script>
+</body>
+</html>
+    ''')
+
+
 @app.get("/api/status/<int:account>")
 def get_account_status(account):
     """查询账户最新状态"""
