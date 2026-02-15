@@ -355,8 +355,9 @@ def create_command():
         cmd_id = generate_cmd_id()
         nonce = generate_nonce()
         
-        # 去重检查
-        dedupe_hash = compute_dedupe_hash(action, account, **data)
+        # 去重检查（排除 account 和 action，因为它们已经作为位置参数传递）
+        dedupe_data = {k: v for k, v in data.items() if k not in ['account', 'action']}
+        dedupe_hash = compute_dedupe_hash(action, account, **dedupe_data)
         deduped = False
         
         with data_lock:
