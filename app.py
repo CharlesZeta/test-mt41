@@ -570,7 +570,7 @@ HTML_TEMPLATE = '''
                     自动刷新 (1秒)
                 </label>
                 <label>
-                    账户: <input type="text" id="accountInput" value="123456" style="width: 100px;">
+                    账户: <input type="text" id="accountInput" value="833711" style="width: 100px;">
                 </label>
                 <button onclick="loadData()">手动刷新</button>
             </div>
@@ -675,7 +675,7 @@ HTML_TEMPLATE = '''
         let autoRefreshInterval = null;
         
         function getAccount() {
-            return document.getElementById('accountInput').value || '123456';
+            return document.getElementById('accountInput').value || '833711';
         }
         
         function formatTime(ts) {
