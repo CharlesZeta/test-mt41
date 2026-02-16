@@ -65,8 +65,28 @@ def get_json_or_400():
     - 返回 (None, response) 表示解析失败，直接在视图中 return response
     """
     try:
-        # 先读取原始 body（字符串形式），不再依赖 Content-Type 头
-        raw_body = request.get_data(as_text=True) or ""
+        # 先读取原始字节数据，然后显式UTF-8解码
+        raw_bytes = request.get_data()
+        
+        # 尝试UTF-8解码
+        try:
+            raw_body = raw_bytes.decode('utf-8')
+        except UnicodeDecodeError as decode_err:
+            # 尝试其他编码
+            try:
+                raw_body = raw_bytes.decode('latin-1')
+            except Exception:
+                raw_body = ''
+            resp = jsonify({
+                "ok": False,
+                "error": f"invalid encoding: {decode_err}",
+                "raw_bytes_length": len(raw_bytes),
+                "path": request.path,
+                "method": request.method,
+            })
+            resp.headers['Content-Type'] = 'application/json'
+            return None, (resp, 400)
+        
         if not raw_body.strip():
             resp = jsonify({
                 "ok": False,
@@ -85,7 +105,7 @@ def get_json_or_400():
             resp = jsonify({
                 "ok": False,
                 "error": f"invalid json: {parse_err}",
-                "raw": raw_body,
+                "raw": raw_body[:500],
                 "path": request.path,
                 "method": request.method,
             })
@@ -96,7 +116,7 @@ def get_json_or_400():
             resp = jsonify({
                 "ok": False,
                 "error": "json root must be object",
-                "raw": raw_body,
+                "raw": raw_body[:500],
                 "path": request.path,
                 "method": request.method,
             })
@@ -106,11 +126,15 @@ def get_json_or_400():
         return data, None
     except Exception as e:
         # 兜底保护，任何异常都返回 400
-        raw_body = request.get_data(as_text=True) or ""
+        try:
+            raw_bytes = request.get_data()
+            raw_body = raw_bytes.decode('utf-8', errors='replace')
+        except:
+            raw_body = ""
         resp = jsonify({
             "ok": False,
             "error": f"invalid json: {e}",
-            "raw": raw_body,
+            "raw": raw_body[:500] if raw_body else "",
             "path": request.path,
             "method": request.method,
         })
@@ -297,9 +321,23 @@ def get_commands():
                 content_type = request.headers.get('Content-Type', '')
                 print(f"[MT4 Commands] Content-Type: {content_type}")
                 
-                # 获取原始数据用于调试
-                raw_data = request.get_data(as_text=True)
-                print(f"[MT4 Commands] Raw POST data (first 500 chars): {raw_data[:500]}")
+                # 先读取原始字节数据，然后显式UTF-8解码，确保正确处理编码
+                raw_bytes = request.get_data()
+                print(f"[MT4 Commands] Raw POST bytes length: {len(raw_bytes)}")
+                
+                # 尝试UTF-8解码
+                try:
+                    raw_data = raw_bytes.decode('utf-8')
+                    print(f"[MT4 Commands] Raw POST data (first 500 chars): {raw_data[:500]}")
+                except UnicodeDecodeError as decode_err:
+                    print(f"[MT4 Commands] UTF-8 decode error: {decode_err}")
+                    # 尝试其他编码
+                    try:
+                        raw_data = raw_bytes.decode('latin-1')
+                        print(f"[MT4 Commands] Fallback to latin-1, data (first 500 chars): {raw_data[:500]}")
+                    except Exception as e:
+                        print(f"[MT4 Commands] All decode attempts failed: {e}")
+                        raw_data = ''
                 
                 # 使用更健壮的JSON解析方式：直接读取原始body并解析，不依赖Content-Type
                 if raw_data and raw_data.strip():
@@ -309,6 +347,7 @@ def get_commands():
                     except json.JSONDecodeError as json_err:
                         print(f"[MT4 Commands] JSON parse error: {json_err}")
                         print(f"[MT4 Commands] Raw data that failed to parse: {raw_data[:200]}")
+                        print(f"[MT4 Commands] Raw bytes hex (first 100): {raw_bytes[:100].hex()}")
                         # JSON解析失败，data保持为空字典，后续会尝试从GET参数获取
                         data = {}
                 else:
@@ -682,13 +721,34 @@ def create_command():
     """创建命令（网页端调用）"""
     log_request('create_command')
     try:
-        # 检查Content-Type
-        if not request.is_json:
-            return safe_json_response(ok=False, error='Content-Type must be application/json')
+        # 先读取原始字节数据，然后显式UTF-8解码
+        raw_bytes = request.get_data()
+        content_type = request.headers.get('Content-Type', '')
+        print(f"[Create Command] Content-Type: {content_type}")
+        print(f"[Create Command] Raw POST bytes length: {len(raw_bytes)}")
         
-        data = request.get_json(silent=True)
-        if not data:
-            return safe_json_response(ok=False, error='invalid json')
+        # 尝试UTF-8解码
+        try:
+            raw_data = raw_bytes.decode('utf-8')
+            print(f"[Create Command] Raw POST data (first 500 chars): {raw_data[:500]}")
+        except UnicodeDecodeError as decode_err:
+            print(f"[Create Command] UTF-8 decode error: {decode_err}")
+            return safe_json_response(ok=False, error=f'invalid encoding: {decode_err}')
+        
+        # 解析JSON（不依赖Content-Type，直接解析body）
+        if not raw_data or not raw_data.strip():
+            return safe_json_response(ok=False, error='empty body')
+        
+        try:
+            data = json.loads(raw_data)
+            print(f"[Create Command] Parsed JSON: {data}")
+        except json.JSONDecodeError as json_err:
+            print(f"[Create Command] JSON parse error: {json_err}")
+            print(f"[Create Command] Raw data that failed to parse: {raw_data[:200]}")
+            return safe_json_response(ok=False, error=f'invalid json: {json_err}')
+        
+        if not isinstance(data, dict):
+            return safe_json_response(ok=False, error='json root must be object')
         
         account = data.get('account', '')
         action = data.get('action', '')
