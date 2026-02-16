@@ -39,6 +39,9 @@ positions_data: Dict[str, dict] = {}
 # 去重窗口：{account: {hash: (cmd_id, timestamp)}}
 dedupe_cache: Dict[str, Dict[str, tuple]] = defaultdict(dict)
 
+# Echo 调试日志：deque([log_entry, ...])
+echo_logs: deque = deque(maxlen=100)  # 保存最近100条 echo 请求
+
 # 统计指标
 metrics = {
     'total_commands': 0,
@@ -947,6 +950,30 @@ def debug_queues():
         print(traceback_str)
         return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
+@app.route('/web/api/debug/echo-log', methods=['GET'])
+def get_echo_log():
+    """调试接口：获取 Echo 日志（供网页查看）"""
+    try:
+        limit = int(request.args.get('limit', 50))
+        with data_lock:
+            # 返回最近的日志（最新的在前）
+            logs_list = list(echo_logs)[-limit:]
+            logs_list.reverse()  # 最新的在前
+        
+        return safe_json_response(ok=True, data={
+            'logs': logs_list,
+            'total': len(echo_logs),
+            'limit': limit,
+        })
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Debug Echo Log] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
 
 @app.route('/web/api/echo', methods=['GET', 'POST'])
 def echo():
@@ -966,13 +993,29 @@ def echo():
         except Exception:
             raw_text = ""
         
-        # 打印完整调试信息到控制台
+        # 打印完整调试信息到控制台（如果能看到的话）
         print("=== /web/api/echo 调试请求 ===")
         print(f"Path   : {request.path}")
         print(f"Method : {request.method}")
         print(f"Headers: {dict(request.headers)}")
         print(f"Body   : {raw_text[:500]}")
         print("=== /web/api/echo 结束 ===")
+        
+        # 保存到内存日志（供网页查看）
+        log_entry = {
+            'timestamp': time.time(),
+            'datetime': datetime.now().isoformat(),
+            'method': request.method,
+            'path': request.path,
+            'headers': dict(request.headers),
+            'body_bytes_len': len(raw_body),
+            'body_full': raw_text,  # 完整 body
+            'body_preview': raw_text[:1000],  # 前1000字符预览
+            'remote_addr': request.remote_addr or 'unknown',
+        }
+        
+        with data_lock:
+            echo_logs.append(log_entry)
         
         resp = jsonify({
             "ok": True,
@@ -1194,6 +1237,22 @@ HTML_TEMPLATE = '''
                 </table>
             </div>
         </div>
+        
+        <div class="panel">
+            <h2>🔍 Echo 调试日志（MT4 原始请求）</h2>
+            <div style="margin-bottom: 10px;">
+                <button onclick="loadEchoLog()" style="margin-right: 10px;">刷新日志</button>
+                <label>
+                    <input type="checkbox" id="autoRefreshEcho" checked>
+                    自动刷新 (2秒)
+                </label>
+            </div>
+            <div style="overflow-x: auto; max-height: 400px; background: #1a1a1a; padding: 10px; border-radius: 4px;">
+                <div id="echoLogContent" style="font-family: 'Courier New', monospace; font-size: 11px; color: #e0e0e0;">
+                    <p>等待日志数据...</p>
+                </div>
+            </div>
+        </div>
     </div>
     
     <script>
@@ -1411,6 +1470,63 @@ HTML_TEMPLATE = '''
             }
         }
         
+        // Echo 日志相关
+        let echoRefreshInterval = null;
+        
+        async function loadEchoLog() {
+            try {
+                const res = await fetch('/web/api/debug/echo-log?limit=20');
+                const contentType = res.headers.get('content-type');
+                let data;
+                
+                if (contentType && contentType.includes('application/json')) {
+                    data = await res.json();
+                } else {
+                    const text = await res.text();
+                    console.error('Echo log 非JSON响应:', text.substring(0, 200));
+                    return;
+                }
+                
+                if (data.ok && data.logs) {
+                    const logDiv = document.getElementById('echoLogContent');
+                    if (data.logs.length === 0) {
+                        logDiv.innerHTML = '<p style="color: #888;">暂无 Echo 日志</p>';
+                    } else {
+                        let html = '<div style="line-height: 1.6;">';
+                        data.logs.forEach((log, idx) => {
+                            const timeStr = new Date(log.timestamp * 1000).toLocaleString();
+                            html += `<div style="margin-bottom: 15px; padding: 10px; background: #2a2a2a; border-left: 3px solid #4CAF50; border-radius: 4px;">`;
+                            html += `<div style="color: #4CAF50; font-weight: bold; margin-bottom: 5px;">[${idx + 1}] ${timeStr} - ${log.method} ${log.path}</div>`;
+                            html += `<div style="color: #aaa; font-size: 10px; margin-bottom: 5px;">Remote: ${log.remote_addr} | Body Size: ${log.body_bytes_len} bytes</div>`;
+                            
+                            // Headers
+                            html += `<div style="margin-top: 8px;"><strong style="color: #2196F3;">Headers:</strong></div>`;
+                            html += `<pre style="background: #1a1a1a; padding: 5px; border-radius: 3px; overflow-x: auto; font-size: 10px; margin: 5px 0;">`;
+                            Object.entries(log.headers || {}).forEach(([k, v]) => {
+                                html += `${k}: ${v}\n`;
+                            });
+                            html += `</pre>`;
+                            
+                            // Body
+                            html += `<div style="margin-top: 8px;"><strong style="color: #2196F3;">Body (${log.body_bytes_len} bytes):</strong></div>`;
+                            html += `<pre style="background: #1a1a1a; padding: 5px; border-radius: 3px; overflow-x: auto; font-size: 10px; margin: 5px 0; white-space: pre-wrap; word-wrap: break-word; max-height: 300px; overflow-y: auto;">`;
+                            html += (log.body_full || log.body_preview || '(empty)').substring(0, 2000);
+                            if (log.body_bytes_len > 2000) {
+                                html += `\n\n... (truncated, total ${log.body_bytes_len} bytes)`;
+                            }
+                            html += `</pre>`;
+                            
+                            html += `</div>`;
+                        });
+                        html += '</div>';
+                        logDiv.innerHTML = html;
+                    }
+                }
+            } catch (error) {
+                console.error('Load echo log error:', error);
+            }
+        }
+        
         // 自动刷新
         document.getElementById('autoRefresh').addEventListener('change', function(e) {
             if (e.target.checked) {
@@ -1420,10 +1536,23 @@ HTML_TEMPLATE = '''
             }
         });
         
+        // Echo 日志自动刷新
+        document.getElementById('autoRefreshEcho').addEventListener('change', function(e) {
+            if (e.target.checked) {
+                echoRefreshInterval = setInterval(loadEchoLog, 2000);
+            } else {
+                if (echoRefreshInterval) clearInterval(echoRefreshInterval);
+            }
+        });
+        
         // 初始加载
         loadData();
+        loadEchoLog();
         if (document.getElementById('autoRefresh').checked) {
             autoRefreshInterval = setInterval(loadData, 1000);
+        }
+        if (document.getElementById('autoRefreshEcho').checked) {
+            echoRefreshInterval = setInterval(loadEchoLog, 2000);
         }
     </script>
 </body>
