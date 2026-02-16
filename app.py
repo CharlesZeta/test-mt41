@@ -301,17 +301,21 @@ def get_commands():
                 raw_data = request.get_data(as_text=True)
                 print(f"[MT4 Commands] Raw POST data (first 500 chars): {raw_data[:500]}")
                 
-                # 尝试解析 JSON
-                try:
-                    data = request.get_json(force=True, silent=False) or {}
-                    print(f"[MT4 Commands] Parsed JSON: {data}")
-                except Exception as json_err:
-                    print(f"[MT4 Commands] JSON parse error: {json_err}")
-                    # 如果 JSON 解析失败，尝试从原始数据中提取
+                # 使用更健壮的JSON解析方式：直接读取原始body并解析，不依赖Content-Type
+                if raw_data and raw_data.strip():
+                    try:
+                        data = json.loads(raw_data)
+                        print(f"[MT4 Commands] Parsed JSON: {data}")
+                    except json.JSONDecodeError as json_err:
+                        print(f"[MT4 Commands] JSON parse error: {json_err}")
+                        print(f"[MT4 Commands] Raw data that failed to parse: {raw_data[:200]}")
+                        # JSON解析失败，data保持为空字典，后续会尝试从GET参数获取
+                        data = {}
+                else:
+                    # 空body，data保持为空字典
                     data = {}
-                    # 尝试从 GET 参数获取
-                    account = request.args.get('account', '')
                 
+                # 从POST JSON或GET参数获取account
                 account = data.get('account', '') or request.args.get('account', '')
                 # 安全转换 max_count
                 try:
@@ -320,6 +324,7 @@ def get_commands():
                 except (ValueError, TypeError):
                     max_count = 50
             else:
+                # GET请求：从URL参数获取
                 account = request.args.get('account', '')
                 try:
                     max_count = int(request.args.get('max', 50))
@@ -351,6 +356,7 @@ def get_commands():
             
             # 提供更友好的错误响应
             response_data = {
+                'ok': False,
                 'error': 'account required',
                 'message': '缺少必需的 account 参数。请通过以下方式之一提供：',
                 'solutions': [
