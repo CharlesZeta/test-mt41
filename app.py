@@ -55,6 +55,66 @@ data_lock = threading.Lock()
 
 # ==================== 工具函数 ====================
 
+def get_json_or_400():
+    """
+    安全解析 JSON 请求体。
+    - 返回 (data, None) 表示解析成功
+    - 返回 (None, response) 表示解析失败，直接在视图中 return response
+    """
+    try:
+        # 先读取原始 body（字符串形式），不再依赖 Content-Type 头
+        raw_body = request.get_data(as_text=True) or ""
+        if not raw_body.strip():
+            resp = jsonify({
+                "ok": False,
+                "error": "empty body",
+                "raw": raw_body,
+                "path": request.path,
+                "method": request.method,
+            })
+            resp.headers['Content-Type'] = 'application/json'
+            return None, (resp, 400)
+
+        try:
+            data = json.loads(raw_body)
+        except Exception as parse_err:
+            # 解析失败，返回 400，并附带原始 body 方便调试
+            resp = jsonify({
+                "ok": False,
+                "error": f"invalid json: {parse_err}",
+                "raw": raw_body,
+                "path": request.path,
+                "method": request.method,
+            })
+            resp.headers['Content-Type'] = 'application/json'
+            return None, (resp, 400)
+
+        if not isinstance(data, dict):
+            resp = jsonify({
+                "ok": False,
+                "error": "json root must be object",
+                "raw": raw_body,
+                "path": request.path,
+                "method": request.method,
+            })
+            resp.headers['Content-Type'] = 'application/json'
+            return None, (resp, 400)
+
+        return data, None
+    except Exception as e:
+        # 兜底保护，任何异常都返回 400
+        raw_body = request.get_data(as_text=True) or ""
+        resp = jsonify({
+            "ok": False,
+            "error": f"invalid json: {e}",
+            "raw": raw_body,
+            "path": request.path,
+            "method": request.method,
+        })
+        resp.headers['Content-Type'] = 'application/json'
+        return None, (resp, 400)
+
+
 def generate_nonce() -> str:
     """生成随机 nonce"""
     return uuid.uuid4().hex[:8]
@@ -223,9 +283,32 @@ def get_commands():
     log_request('get_commands')
     try:
         # 优先从POST JSON获取，其次从GET参数获取
+        account = ''
+        max_count = 50
+        data = {}
+        raw_data = ''  # 初始化 raw_data
+        
         try:
             if request.method == 'POST':
-                data = request.get_json() or {}
+                # 检查 Content-Type
+                content_type = request.headers.get('Content-Type', '')
+                print(f"[MT4 Commands] Content-Type: {content_type}")
+                
+                # 获取原始数据用于调试
+                raw_data = request.get_data(as_text=True)
+                print(f"[MT4 Commands] Raw POST data (first 500 chars): {raw_data[:500]}")
+                
+                # 尝试解析 JSON
+                try:
+                    data = request.get_json(force=True, silent=False) or {}
+                    print(f"[MT4 Commands] Parsed JSON: {data}")
+                except Exception as json_err:
+                    print(f"[MT4 Commands] JSON parse error: {json_err}")
+                    # 如果 JSON 解析失败，尝试从原始数据中提取
+                    data = {}
+                    # 尝试从 GET 参数获取
+                    account = request.args.get('account', '')
+                
                 account = data.get('account', '') or request.args.get('account', '')
                 # 安全转换 max_count
                 try:
@@ -240,21 +323,41 @@ def get_commands():
                 except (ValueError, TypeError):
                     max_count = 50
         except Exception as parse_err:
+            import traceback
             print(f"[MT4 Commands] Parse error: {parse_err}")
+            print(traceback.format_exc())
             account = request.args.get('account', '')
             max_count = 50
         
         # 调试日志
-        print(f"[MT4 Commands] Method: {request.method}, Account: {account}, Max: {max_count}")
+        print(f"[MT4 Commands] Method: {request.method}, Account: '{account}', Max: {max_count}")
         print(f"[MT4 Commands] GET args: {dict(request.args)}")
-        if request.method == 'POST':
-            try:
-                print(f"[MT4 Commands] POST data: {request.get_json()}")
-            except:
-                print(f"[MT4 Commands] POST data: (无法解析)")
+        print(f"[MT4 Commands] POST data keys: {list(data.keys()) if data else 'N/A'}")
         
         if not account:
-            response = jsonify({'error': 'account required'})
+            # 更详细的错误信息
+            error_details = {
+                'method': request.method,
+                'content_type': request.headers.get('Content-Type', 'N/A'),
+                'post_data_keys': list(data.keys()) if data else [],
+                'get_args': dict(request.args),
+                'raw_post_data_preview': raw_data[:200] if request.method == 'POST' and raw_data else 'N/A'
+            }
+            error_msg = f"account required. Details: {error_details}"
+            print(f"[MT4 Commands] ERROR: {error_msg}")
+            
+            # 提供更友好的错误响应
+            response_data = {
+                'error': 'account required',
+                'message': '缺少必需的 account 参数。请通过以下方式之一提供：',
+                'solutions': [
+                    'POST 请求：在 JSON 体中包含 {"account": "账户号", "max": 50}',
+                    'GET 请求：在 URL 参数中包含 ?account=账户号&max=50',
+                    '例如：/web/api/mt4/commands?account=833711'
+                ],
+                'debug': error_details
+            }
+            response = jsonify(response_data)
             response.headers['Content-Type'] = 'application/json'
             return response, 400
         
@@ -390,14 +493,14 @@ def post_status():
     """MT4 上报状态"""
     log_request('post_status')
     try:
-        data = request.get_json(silent=True)
-        if not data:
-            return safe_json_response(ok=False, error='invalid json')
+        data, error_response = get_json_or_400()
+        if error_response is not None:
+            return error_response
         
         account = data.get('account', '')
         
         if not account:
-            return safe_json_response(ok=False, error='account required')
+            return safe_json_response(ok=False, error='account required', status_code=400)
         
         with data_lock:
             if account not in latest_status:
@@ -422,16 +525,16 @@ def post_report():
     """MT4 上报执行结果"""
     log_request('post_report')
     try:
-        data = request.get_json(silent=True)
-        if not data:
-            return safe_json_response(ok=False, error='invalid json')
+        data, error_response = get_json_or_400()
+        if error_response is not None:
+            return error_response
         
         account = data.get('account', '')
         cmd_id = data.get('cmd_id', '')
         nonce = data.get('nonce', '')
         
         if not account or not cmd_id:
-            return safe_json_response(ok=False, error='account and cmd_id required')
+            return safe_json_response(ok=False, error='account and cmd_id required', status_code=400)
         
         with data_lock:
             # 校验 cmd_id 和 nonce
@@ -506,14 +609,14 @@ def post_quote():
     """MT4 上报报价"""
     log_request('post_quote')
     try:
-        data = request.get_json(silent=True)
-        if not data:
-            return safe_json_response(ok=False, error='invalid json')
+        data, error_response = get_json_or_400()
+        if error_response is not None:
+            return error_response
         
         account = data.get('account', '')
         
         if not account:
-            return safe_json_response(ok=False, error='account required')
+            return safe_json_response(ok=False, error='account required', status_code=400)
         
         with data_lock:
             if account not in quotes:
@@ -538,14 +641,14 @@ def post_positions():
     """MT4 上报持仓"""
     log_request('post_positions')
     try:
-        data = request.get_json(silent=True)
-        if not data:
-            return safe_json_response(ok=False, error='invalid json')
+        data, error_response = get_json_or_400()
+        if error_response is not None:
+            return error_response
         
         account = data.get('account', '')
         
         if not account:
-            return safe_json_response(ok=False, error='account required')
+            return safe_json_response(ok=False, error='account required', status_code=400)
         
         with data_lock:
             positions_data[account] = {
@@ -841,6 +944,52 @@ def debug_queues():
         error_type = e.__class__.__name__
         traceback_str = traceback.format_exc()
         print(f"[Debug Queues] Error: {error_type}: {error_msg}")
+        print(traceback_str)
+        return safe_json_response(ok=False, error=error_msg, trace=error_type)
+
+
+@app.route('/web/api/echo', methods=['GET', 'POST'])
+def echo():
+    """
+    调试接口：原样回显 MT4 / 其他客户端发送的内容
+    用于确认：
+    - 实际 HTTP 方法
+    - 实际 Header
+    - 实际原始 body（包括 data_size 是否为 0）
+    """
+    try:
+        # 为了完全符合你的调试需求，这里不做任何 JSON 解析，只是原样返回
+        raw_body = request.get_data()  # bytes
+        # 为了方便在浏览器 / 日志里看，再给一份 UTF-8 文本版本
+        try:
+            raw_text = raw_body.decode('utf-8', errors='replace')
+        except Exception:
+            raw_text = ""
+        
+        # 打印完整调试信息到控制台
+        print("=== /web/api/echo 调试请求 ===")
+        print(f"Path   : {request.path}")
+        print(f"Method : {request.method}")
+        print(f"Headers: {dict(request.headers)}")
+        print(f"Body   : {raw_text[:500]}")
+        print("=== /web/api/echo 结束 ===")
+        
+        resp = jsonify({
+            "ok": True,
+            "method": request.method,
+            "path": request.path,
+            "headers": dict(request.headers),
+            "body_bytes_len": len(raw_body),
+            "body_preview": raw_text[:500],
+        })
+        resp.headers['Content-Type'] = 'application/json'
+        return resp
+    except Exception as e:
+        import traceback
+        error_msg = str(e)
+        error_type = e.__class__.__name__
+        traceback_str = traceback.format_exc()
+        print(f"[Echo] Error: {error_type}: {error_msg}")
         print(traceback_str)
         return safe_json_response(ok=False, error=error_msg, trace=error_type)
 
