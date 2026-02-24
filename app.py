@@ -419,7 +419,7 @@ INDEX_HTML = """
                 {% endif %}
 
                 <div class="section-title">原始 Headers（调试用）</div>
-                <div class="table-like" style="max-height:170px;overflow:auto;">
+                <div class="table-like" style="max-height:140px;overflow:auto;">
                     {% if report.headers %}
                         {% for k, v in report.headers.items() %}
                             <div class="table-row">
@@ -431,6 +431,22 @@ INDEX_HTML = """
                         <div class="table-row">
                             <div class="table-key">提示</div>
                             <div class="table-value">尚未收到任何请求</div>
+                        </div>
+                    {% endif %}
+                </div>
+
+                <div class="section-title">原始 Body JSON（数据浏览）</div>
+                <div class="table-like" style="max-height:200px;overflow:auto;">
+                    {% if report.body %}
+                        <pre style="margin:0;padding:8px 10px;white-space:pre;overflow:auto;
+                                   font-family:SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
+                                   font-size:11px;line-height:1.4;">
+{{ report.body | tojson(indent=2) }}
+                        </pre>
+                    {% else %}
+                        <div class="table-row">
+                            <div class="table-key">提示</div>
+                            <div class="table-value">尚未收到任何 Body 数据</div>
                         </div>
                     {% endif %}
                 </div>
