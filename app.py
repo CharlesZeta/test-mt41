@@ -410,6 +410,37 @@ INDEX_HTML = """
                             </div>
                         </div>
                     </div>
+
+                    <div class="section-title">当前持仓 / 仓位明细</div>
+                    {% set positions = b.positions or b.open_positions or b.orders %}
+                    {% if positions %}
+                        <div class="table-like" style="max-height:220px;overflow:auto;">
+                            <div class="table-row" style="font-weight:500;font-size:11px;">
+                                <div class="table-key">Symbol / Ticket</div>
+                                <div class="table-value">Volume · Type · Price · SL · TP · Profit</div>
+                            </div>
+                            {% for p in positions %}
+                                <div class="table-row">
+                                    <div class="table-key">
+                                        {{ p.symbol or p.Symbol or p.ticket or p.Ticket or "-" }}
+                                    </div>
+                                    <div class="table-value">
+                                        手数：{{ p.volume or p.Volume or p.lots or "-" }}
+                                        ｜方向：{{ p.order_type or p.type or p.Type or "-" }}
+                                        ｜开仓价：{{ p.open_price or p.price or "-" }}
+                                        ｜SL：{{ p.sl or p.SL or "-" }}
+                                        ｜TP：{{ p.tp or p.TP or "-" }}
+                                        ｜浮盈：{{ p.profit or p.Profit or "-" }}
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% else %}
+                        <p style="font-size:12px;color:var(--text-soft);margin-top:4px;">
+                            当前上报数据中未包含持仓列表字段（如 <code>positions</code> / <code>open_positions</code>）。
+                            如果在 JSON 中增加这些字段，这里会自动显示仓位明细。
+                        </p>
+                    {% endif %}
                 {% else %}
                     <p style="font-size:13px;color:var(--text-soft);margin-top:8px;">
                         暂无账户数据。请在 MT4 EA 中向
@@ -601,6 +632,26 @@ latest_report = {
 pending_orders = []
 
 
+def _normalize_report_body(body_data):
+    """
+    根据实际上报 JSON 的结构做兼容转换：
+    - 如果顶层有 BODY / body 字段，则优先取其为业务数据
+    - 否则直接返回原始 dict
+    """
+    if not isinstance(body_data, dict):
+        return body_data
+
+    body_field = body_data.get("BODY")
+    if isinstance(body_field, dict):
+        return body_field
+
+    body_field_lower = body_data.get("body")
+    if isinstance(body_field_lower, dict):
+        return body_field_lower
+
+    return body_data
+
+
 @app.route("/")
 def index():
     """
@@ -655,9 +706,11 @@ def mt4_echo():
             except Exception:
                 body_data = {}
 
+    normalized_body = _normalize_report_body(body_data or {})
+
     latest_report = {
         "headers": headers_dict,
-        "body": body_data or {},
+        "body": normalized_body,
         "raw_body": raw_body_text,
         "received_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
