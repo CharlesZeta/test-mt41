@@ -37,17 +37,51 @@ def get_client_ip():
     """尝试从请求头获取真实IP"""
     return request.headers.get('X-Real-Ip') or request.headers.get('X-Forwarded-For', request.remote_addr)
 
+def extract_latest_details(record):
+    """从记录中提取详细字段，用于模板展示"""
+    if not record or not record.get('parsed'):
+        return None
+    p = record['parsed']
+    # 安全提取metrics
+    metrics = p.get('metrics', {})
+    return {
+        'account': p.get('account'),
+        'server': p.get('server'),
+        'ts': p.get('ts'),
+        'balance': p.get('balance'),
+        'equity': p.get('equity'),
+        'margin': p.get('margin'),
+        'free_margin': p.get('free_margin'),
+        'margin_level': p.get('margin_level'),
+        'floating_pnl': p.get('floating_pnl'),
+        'day_start_equity': p.get('day_start_equity'),
+        'daily_pnl': p.get('daily_pnl'),
+        'daily_return': p.get('daily_return'),
+        'poll_latency_ms': metrics.get('poll_latency_ms'),
+        'last_http_code': metrics.get('last_http_code'),
+        'last_error': metrics.get('last_error'),
+        # 保留原始解析对象以备扩展
+        '_raw_parsed': p
+    }
+
 # ==================== 路由：主页 ====================
 @app.route('/')
 def index():
     """显示控制面板：最近上报数据、指令队列、发单表单"""
     with history_lock:
-        # 最新的在前
-        hist_list = list(reversed(history))
+        hist_list = list(reversed(history))  # 最新的在前
+        latest_record = hist_list[0] if hist_list else None
+        latest_detail = extract_latest_details(latest_record)
     with commands_lock:
-        # 复制一份以免在模板遍历时被修改
         cmds_copy = commands.copy()
-    return render_template_string(HTML_TEMPLATE, history=hist_list, commands=cmds_copy)
+    return render_template_string(
+        HTML_TEMPLATE,
+        history=hist_list,
+        latest=latest_detail,
+        latest_raw=latest_record,  # 传递原始记录用于原始预览等
+        commands=cmds_copy,
+        MAX_HISTORY=MAX_HISTORY
+    )
 
 # ==================== 路由：MT4数据上报接口 ====================
 @app.route('/web/api/echo', methods=['POST'])
@@ -76,9 +110,9 @@ def mt4_webhook():
         'method': request.method,
         'path': request.path,
         'headers': headers_dict,
-        'body_raw': raw_body[:500] + ('...' if len(raw_body) > 500 else ''),  # 避免页面过长
+        'body_raw': raw_body[:500] + ('...' if len(raw_body) > 500 else ''),
         'parsed': parsed_json,
-        # 提取常用字段方便展示
+        # 提取常用字段方便快速展示（表格中用）
         'account': parsed_json.get('account') if parsed_json else None,
         'server': parsed_json.get('server') if parsed_json else None,
         'balance': parsed_json.get('balance') if parsed_json else None,
@@ -113,9 +147,8 @@ def send_command():
     sl = request.form.get('sl', '').strip()
     tp = request.form.get('tp', '').strip()
 
-    # 简单校验
     if not symbol or direction not in ['BUY', 'SELL'] or not volume:
-        return redirect(url_for('index'))  # 忽略错误，实际可加flash消息，为简化直接返回
+        return redirect(url_for('index'))
 
     try:
         volume = float(volume)
@@ -162,49 +195,78 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MT4 远程交易执行面板</title>
-    <!-- Bootstrap 5 CDN (简洁主题) -->
+    <title>MT4 远程交易执行面板 · 专业版</title>
+    <!-- Bootstrap 5 CDN + 字体图标 -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <style>
-        body { padding-top: 20px; background-color: #f8f9fa; }
-        .card-header { font-weight: bold; }
-        .history-table td { font-size: 0.9rem; vertical-align: middle; }
-        .badge-ip { font-family: monospace; }
-        .raw-preview { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        body { padding-top: 20px; background-color: #f0f2f5; }
+        .card-header { font-weight: 600; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+        .stat-item { background: #f8f9fa; border-radius: 8px; padding: 10px 12px; border-left: 4px solid #0d6efd; }
+        .stat-label { font-size: 0.8rem; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
+        .stat-value { font-size: 1.2rem; font-weight: 600; font-family: 'Courier New', monospace; }
+        .history-table td { font-size: 0.85rem; vertical-align: middle; }
+        .badge-ip { font-family: monospace; background: #e9ecef; color: #000; padding: 3px 6px; border-radius: 4px; }
         .command-item { background: #e9ecef; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
+        .info-box { background: #d1e7ff; border-radius: 8px; padding: 12px; margin-bottom: 15px; border-left: 5px solid #0a58ca; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1 class="mb-4">📊 MT4 远程交易执行</h1>
+        <h1 class="mb-3"><i class="bi bi-cpu"></i> MT4 远程交易执行 · 专业监控</h1>
         
-        <!-- 最新上报数据卡片 -->
-        <div class="card mb-4">
-            <div class="card-header bg-primary text-white">📨 最新接收的数据</div>
+        <!-- 接口说明信息框 -->
+        <div class="info-box d-flex justify-content-between align-items-center">
+            <div>
+                <i class="bi bi-info-circle-fill me-2"></i>
+                <strong>MT4上报接口：</strong> <code>POST /web/api/echo</code> 
+                <span class="badge bg-secondary ms-2">等待指令返回</span>
+                <span class="ms-3"><i class="bi bi-arrow-return-right"></i> 响应格式：纯文本，每行一条指令（如 <code>BUY,EURUSD,0.1,1.1050,1.1100</code>），无指令返回 <code>NOCOMMAND</code></span>
+            </div>
+            <span class="text-muted small">队列指令将在下次上报时被取走</span>
+        </div>
+
+        <!-- 最新上报详细数据卡片 (解析后) -->
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-primary text-white bg-gradient">
+                <i class="bi bi-graph-up-arrow"></i> 最新账户状态 (解析数据)
+            </div>
             <div class="card-body">
-                {% if history %}
-                    {% set last = history[0] %}
-                    <div class="row">
-                        <div class="col-md-3"><strong>账户:</strong> {{ last.account or 'N/A' }}</div>
-                        <div class="col-md-3"><strong>服务器:</strong> {{ last.server or 'N/A' }}</div>
-                        <div class="col-md-2"><strong>余额:</strong> {{ last.balance or 'N/A' }}</div>
-                        <div class="col-md-2"><strong>净值:</strong> {{ last.equity or 'N/A' }}</div>
-                        <div class="col-md-2"><strong>浮动盈亏:</strong> {{ last.floating_pnl or 'N/A' }}</div>
+                {% if latest %}
+                    <div class="stat-grid">
+                        <!-- 基础信息 -->
+                        <div class="stat-item"><span class="stat-label">账户</span><div class="stat-value">{{ latest.account or 'N/A' }}</div></div>
+                        <div class="stat-item"><span class="stat-label">服务器</span><div class="stat-value">{{ latest.server or 'N/A' }}</div></div>
+                        <div class="stat-item"><span class="stat-label">时间戳(ts)</span><div class="stat-value">{{ latest.ts or 'N/A' }}</div></div>
+                        <!-- 资金数据 -->
+                        <div class="stat-item"><span class="stat-label">余额(Balance)</span><div class="stat-value">{{ "%.2f"|format(latest.balance) if latest.balance is number else latest.balance }}</div></div>
+                        <div class="stat-item"><span class="stat-label">净值(Equity)</span><div class="stat-value">{{ "%.2f"|format(latest.equity) if latest.equity is number else latest.equity }}</div></div>
+                        <div class="stat-item"><span class="stat-label">已用预付款(Margin)</span><div class="stat-value">{{ "%.2f"|format(latest.margin) if latest.margin is number else latest.margin }}</div></div>
+                        <div class="stat-item"><span class="stat-label">可用预付款(Free)</span><div class="stat-value">{{ "%.2f"|format(latest.free_margin) if latest.free_margin is number else latest.free_margin }}</div></div>
+                        <div class="stat-item"><span class="stat-label">预付款比例(Margin Level)</span><div class="stat-value">{{ "%.2f"|format(latest.margin_level) if latest.margin_level is number else latest.margin_level }}%</div></div>
+                        <div class="stat-item"><span class="stat-label">浮动盈亏</span><div class="stat-value">{{ "%.2f"|format(latest.floating_pnl) if latest.floating_pnl is number else latest.floating_pnl }}</div></div>
+                        <div class="stat-item"><span class="stat-label">日初始净值</span><div class="stat-value">{{ "%.2f"|format(latest.day_start_equity) if latest.day_start_equity is number else latest.day_start_equity }}</div></div>
+                        <div class="stat-item"><span class="stat-label">日盈亏</span><div class="stat-value">{{ "%.2f"|format(latest.daily_pnl) if latest.daily_pnl is number else latest.daily_pnl }}</div></div>
+                        <div class="stat-item"><span class="stat-label">日盈亏率</span><div class="stat-value">{{ "%.5f"|format(latest.daily_return) if latest.daily_return is number else latest.daily_return }}</div></div>
+                        <!-- 网络指标 -->
+                        <div class="stat-item"><span class="stat-label">网络延迟(ms)</span><div class="stat-value">{{ "%.0f"|format(latest.poll_latency_ms) if latest.poll_latency_ms is number else latest.poll_latency_ms }}</div></div>
+                        <div class="stat-item"><span class="stat-label">上次HTTP代码</span><div class="stat-value">{{ latest.last_http_code or 'N/A' }}</div></div>
+                        {% if latest.last_error %}
+                        <div class="stat-item"><span class="stat-label">错误信息</span><div class="stat-value text-danger" style="font-size:0.9rem;">{{ latest.last_error }}</div></div>
+                        {% endif %}
                     </div>
-                    <div class="row mt-2">
-                        <div class="col-12">
-                            <strong>时间/IP:</strong> {{ last.received_at }} 来自 {{ last.ip }}
-                            <span class="badge bg-secondary">{{ last.method }} {{ last.path }}</span>
-                        </div>
-                    </div>
-                    <div class="row mt-2">
-                        <div class="col-12">
-                            <strong>原始Body预览:</strong>
-                            <pre class="bg-light p-2 rounded" style="font-size:0.8rem;">{{ last.body_raw }}</pre>
+                    <!-- 原始JSON预览（可折叠） -->
+                    <div class="mt-3">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#rawJsonPreview" aria-expanded="false">
+                            <i class="bi bi-code-slash"></i> 查看原始JSON
+                        </button>
+                        <div class="collapse mt-2" id="rawJsonPreview">
+                            <pre class="bg-light p-3 rounded" style="font-size:0.75rem;">{{ latest_raw.body_raw if latest_raw else '无原始数据' }}</pre>
                         </div>
                     </div>
                 {% else %}
-                    <p class="text-muted">尚未收到任何MT4上报数据。</p>
+                    <p class="text-muted"><i class="bi bi-exclamation-circle"></i> 尚未收到任何MT4上报数据，请等待终端上报。</p>
                 {% endif %}
             </div>
         </div>
@@ -213,8 +275,10 @@ HTML_TEMPLATE = """
         <div class="row">
             <!-- 左侧：历史记录表 -->
             <div class="col-lg-7 mb-4">
-                <div class="card h-100">
-                    <div class="card-header bg-secondary text-white">📜 最近上报历史 (最多{{ history|length }}/{{ MAX_HISTORY }})</div>
+                <div class="card shadow-sm h-100">
+                    <div class="card-header bg-secondary text-white">
+                        <i class="bi bi-clock-history"></i> 最近上报历史 ({{ history|length }}/{{ MAX_HISTORY }})
+                    </div>
                     <div class="card-body p-0">
                         <div class="table-responsive">
                             <table class="table table-striped table-hover history-table mb-0">
@@ -226,7 +290,7 @@ HTML_TEMPLATE = """
                                         <th>净值</th>
                                         <th>浮动盈亏</th>
                                         <th>IP</th>
-                                        <th>原始数据</th>
+                                        <th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -234,14 +298,14 @@ HTML_TEMPLATE = """
                                     <tr>
                                         <td>{{ rec.received_at.split(' ')[1] }}</td>
                                         <td>{{ rec.account or '-' }}</td>
-                                        <td>{{ rec.balance or '-' }}</td>
-                                        <td>{{ rec.equity or '-' }}</td>
-                                        <td>{{ rec.floating_pnl or '-' }}</td>
+                                        <td>{{ "%.2f"|format(rec.balance) if rec.balance is number else rec.balance }}</td>
+                                        <td>{{ "%.2f"|format(rec.equity) if rec.equity is number else rec.equity }}</td>
+                                        <td>{{ "%.2f"|format(rec.floating_pnl) if rec.floating_pnl is number else rec.floating_pnl }}</td>
                                         <td><span class="badge-ip">{{ rec.ip }}</span></td>
                                         <td>
                                             <button class="btn btn-sm btn-outline-info" type="button" 
                                                     data-bs-toggle="collapse" data-bs-target="#raw-{{ loop.index }}" 
-                                                    aria-expanded="false">预览</button>
+                                                    aria-expanded="false"><i class="bi bi-eye"></i></button>
                                             <div class="collapse mt-1" id="raw-{{ loop.index }}">
                                                 <div class="card card-body p-2">
                                                     <small>{{ rec.body_raw }}</small>
@@ -262,11 +326,11 @@ HTML_TEMPLATE = """
             <!-- 右侧：指令队列 + 发单表单 -->
             <div class="col-lg-5 mb-4">
                 <!-- 指令队列卡片 -->
-                <div class="card mb-4">
+                <div class="card shadow-sm mb-4">
                     <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
-                        <span>⏳ 待发送指令队列 ({{ commands|length }})</span>
+                        <span><i class="bi bi-list-check"></i> 待发送指令队列 ({{ commands|length }})</span>
                         <form method="post" action="{{ url_for('clear_commands') }}" style="display:inline;">
-                            <button type="submit" class="btn btn-sm btn-light" onclick="return confirm('确定清空所有指令？')">清空全部</button>
+                            <button type="submit" class="btn btn-sm btn-light" onclick="return confirm('确定清空所有指令？')"><i class="bi bi-trash"></i> 清空</button>
                         </form>
                     </div>
                     <div class="card-body">
@@ -277,26 +341,28 @@ HTML_TEMPLATE = """
                                     <strong>{{ cmd.direction }}</strong> {{ cmd.symbol }}  {{ cmd.volume }} 手
                                     {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
                                     {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
-                                    <br><small class="text-muted">添加于 {{ cmd.timestamp }}</small>
+                                    <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp }}</small>
                                 </div>
                                 <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
-                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')">✖</button>
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')"><i class="bi bi-x"></i></button>
                                 </form>
                             </div>
                             {% endfor %}
                         {% else %}
-                            <p class="text-muted mb-0">队列为空，暂无待发指令。</p>
+                            <p class="text-muted mb-0"><i class="bi bi-inbox"></i> 队列为空，暂无待发指令。</p>
                         {% endif %}
                     </div>
                 </div>
 
                 <!-- 发单表单卡片 -->
-                <div class="card">
-                    <div class="card-header bg-warning">✍️ 下达新交易指令</div>
+                <div class="card shadow-sm">
+                    <div class="card-header bg-warning">
+                        <i class="bi bi-pencil-square"></i> 下达新交易指令
+                    </div>
                     <div class="card-body">
                         <form method="post" action="{{ url_for('send_command') }}">
                             <div class="mb-2">
-                                <label class="form-label">品种</label>
+                                <label class="form-label">品种 <span class="text-muted">(如 EURUSD)</span></label>
                                 <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD" required>
                             </div>
                             <div class="mb-2">
@@ -312,28 +378,23 @@ HTML_TEMPLATE = """
                             </div>
                             <div class="row">
                                 <div class="col mb-2">
-                                    <label class="form-label">止损 (SL, 可选)</label>
-                                    <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="例如 1.1050">
+                                    <label class="form-label">止损 (SL)</label>
+                                    <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="可选">
                                 </div>
                                 <div class="col mb-2">
-                                    <label class="form-label">止盈 (TP, 可选)</label>
-                                    <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="例如 1.1100">
+                                    <label class="form-label">止盈 (TP)</label>
+                                    <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="可选">
                                 </div>
                             </div>
-                            <button type="submit" class="btn btn-primary w-100 mt-2">➡️ 加入指令队列</button>
+                            <button type="submit" class="btn btn-primary w-100 mt-2"><i class="bi bi-send"></i> 加入指令队列</button>
                         </form>
-                        <hr>
-                        <p class="small text-muted mb-0">
-                            * 指令将在下一次MT4上报时被取走。<br>
-                            * 队列支持多条指令，会一次性全部返回（每行一条）。
-                        </p>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Bootstrap JS (用于折叠组件) -->
+    <!-- Bootstrap JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
