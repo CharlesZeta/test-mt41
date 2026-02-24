@@ -450,6 +450,22 @@ INDEX_HTML = """
                         </div>
                     {% endif %}
                 </div>
+
+                <div class="section-title">原始 Raw JSON 字符串（完整请求体）</div>
+                <div class="table-like" style="max-height:200px;overflow:auto;">
+                    {% if report.raw_body %}
+                        <pre style="margin:0;padding:8px 10px;white-space:pre-wrap;word-break:break-all;overflow:auto;
+                                   font-family:SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
+                                   font-size:11px;line-height:1.4;">
+{{ report.raw_body }}
+                        </pre>
+                    {% else %}
+                        <div class="table-row">
+                            <div class="table-key">提示</div>
+                            <div class="table-value">尚未收到任何 Raw JSON 数据</div>
+                        </div>
+                    {% endif %}
+                </div>
             </section>
 
             <!-- 右侧：下单面板 -->
@@ -577,6 +593,7 @@ INDEX_HTML = """
 latest_report = {
     "headers": {},
     "body": {},
+    "raw_body": "",
     "received_at": None,
 }
 
@@ -607,6 +624,9 @@ def mt4_echo():
     # 记录 headers（转成普通 dict 方便在模板中展示）
     headers_dict = {k: v for k, v in request.headers.items()}
 
+    # 原始请求体（字节 -> 字符串），用于页面上展示“raw JSON”
+    raw_body_text = request.get_data(as_text=True) or ""
+
     # 兼容两种 body 格式：
     # 1) Content-Type: application/json  => request.get_json()
     # 2) Content-Type: application/x-www-form-urlencoded 且只有一个 JSON 字符串字段
@@ -630,6 +650,7 @@ def mt4_echo():
     latest_report = {
         "headers": headers_dict,
         "body": body_data or {},
+        "raw_body": raw_body_text,
         "received_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
 
