@@ -1,798 +1,345 @@
-from flask import Flask, request, jsonify, render_template_string, redirect, url_for
+import os
+import json
+import time
+import threading
 from datetime import datetime
+from collections import deque
+from flask import Flask, request, render_template_string, redirect, url_for
 
 app = Flask(__name__)
 
+# ==================== 全局数据结构 ====================
+# 存储最近收到的MT4请求（最多50条）
+MAX_HISTORY = 50
+history = deque(maxlen=MAX_HISTORY)
+history_lock = threading.Lock()
 
-# 直接把前端页面模板嵌入到此文件中，方便单文件部署 / 提交 GitHub
-INDEX_HTML = """
+# 待发送给MT4的指令队列
+# 每个指令为字典： { 'id': 索引, 'symbol':, 'direction':, 'volume':, 'sl':, 'tp':, 'timestamp': }
+commands = []
+commands_lock = threading.Lock()
+cmd_counter = 0  # 简单自增ID
+
+# ==================== 工具函数 ====================
+def format_command(cmd):
+    """将指令字典格式化为字符串，供MT4解析"""
+    base = f"{cmd['direction']},{cmd['symbol']},{cmd['volume']}"
+    if cmd['sl'] is not None and cmd['tp'] is not None:
+        return f"{base},{cmd['sl']},{cmd['tp']}"
+    elif cmd['sl'] is not None:
+        return f"{base},{cmd['sl']},0"
+    elif cmd['tp'] is not None:
+        return f"{base},0,{cmd['tp']}"
+    else:
+        return base
+
+def get_client_ip():
+    """尝试从请求头获取真实IP"""
+    return request.headers.get('X-Real-Ip') or request.headers.get('X-Forwarded-For', request.remote_addr)
+
+# ==================== 路由：主页 ====================
+@app.route('/')
+def index():
+    """显示控制面板：最近上报数据、指令队列、发单表单"""
+    with history_lock:
+        # 最新的在前
+        hist_list = list(reversed(history))
+    with commands_lock:
+        # 复制一份以免在模板遍历时被修改
+        cmds_copy = commands.copy()
+    return render_template_string(HTML_TEMPLATE, history=hist_list, commands=cmds_copy)
+
+# ==================== 路由：MT4数据上报接口 ====================
+@app.route('/web/api/echo', methods=['POST'])
+def mt4_webhook():
+    """
+    接收MT4的POST请求，保存数据到历史，并返回待执行的交易指令。
+    请求体可能是JSON格式（尽管Content-Type可能是x-www-form-urlencoded）。
+    响应格式：纯文本，每行一条指令，无指令时返回"NOCOMMAND"
+    """
+    # 获取原始请求数据
+    raw_body = request.get_data(as_text=True)
+    client_ip = get_client_ip()
+    headers_dict = dict(request.headers)
+
+    # 解析JSON（如果可能）
+    parsed_json = None
+    try:
+        parsed_json = json.loads(raw_body)
+    except json.JSONDecodeError:
+        pass  # 保留为None
+
+    # 构建历史记录
+    record = {
+        'received_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'ip': client_ip,
+        'method': request.method,
+        'path': request.path,
+        'headers': headers_dict,
+        'body_raw': raw_body[:500] + ('...' if len(raw_body) > 500 else ''),  # 避免页面过长
+        'parsed': parsed_json,
+        # 提取常用字段方便展示
+        'account': parsed_json.get('account') if parsed_json else None,
+        'server': parsed_json.get('server') if parsed_json else None,
+        'balance': parsed_json.get('balance') if parsed_json else None,
+        'equity': parsed_json.get('equity') if parsed_json else None,
+        'floating_pnl': parsed_json.get('floating_pnl') if parsed_json else None,
+    }
+
+    with history_lock:
+        history.appendleft(record)  # 最新放左边便于展示
+
+    # 检查是否有待发送指令，如果有则取出所有并清空队列
+    response_lines = []
+    with commands_lock:
+        if commands:
+            for cmd in commands:
+                response_lines.append(format_command(cmd))
+            commands.clear()
+
+    if response_lines:
+        return '\n'.join(response_lines), 200, {'Content-Type': 'text/plain; charset=utf-8'}
+    else:
+        return 'NOCOMMAND', 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+# ==================== 路由：网页发单 ====================
+@app.route('/send_command', methods=['POST'])
+def send_command():
+    """从网页表单接收指令，加入队列"""
+    global cmd_counter
+    symbol = request.form.get('symbol', '').strip().upper()
+    direction = request.form.get('direction', '').strip().upper()
+    volume = request.form.get('volume', '').strip()
+    sl = request.form.get('sl', '').strip()
+    tp = request.form.get('tp', '').strip()
+
+    # 简单校验
+    if not symbol or direction not in ['BUY', 'SELL'] or not volume:
+        return redirect(url_for('index'))  # 忽略错误，实际可加flash消息，为简化直接返回
+
+    try:
+        volume = float(volume)
+        sl = float(sl) if sl else None
+        tp = float(tp) if tp else None
+    except ValueError:
+        return redirect(url_for('index'))
+
+    cmd = {
+        'id': cmd_counter,
+        'symbol': symbol,
+        'direction': direction,
+        'volume': volume,
+        'sl': sl,
+        'tp': tp,
+        'timestamp': datetime.now().strftime('%H:%M:%S')
+    }
+    with commands_lock:
+        commands.append(cmd)
+        cmd_counter += 1
+
+    return redirect(url_for('index'))
+
+# ==================== 路由：删除单条指令 ====================
+@app.route('/delete_command/<int:index>', methods=['POST'])
+def delete_command(index):
+    """按索引删除指令（从0开始）"""
+    with commands_lock:
+        if 0 <= index < len(commands):
+            commands.pop(index)
+    return redirect(url_for('index'))
+
+# ==================== 路由：清空所有指令 ====================
+@app.route('/clear_commands', methods=['POST'])
+def clear_commands():
+    with commands_lock:
+        commands.clear()
+    return redirect(url_for('index'))
+
+# ==================== 完整HTML模板（内嵌） ====================
+HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>MT4 远程交易监控与下单面板</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MT4 远程交易执行面板</title>
+    <!-- Bootstrap 5 CDN (简洁主题) -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        :root {
-            --bg: #0f172a;
-            --bg-elevated: #111827;
-            --accent: #3b82f6;
-            --accent-soft: rgba(59, 130, 246, 0.1);
-            --border: #1f2937;
-            --text: #e5e7eb;
-            --text-soft: #9ca3af;
-            --danger: #ef4444;
-            --success: #22c55e;
-            --warning: #f59e0b;
-        }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: radial-gradient(circle at top, #1d283a 0, #020617 55%, #000 100%);
-            color: var(--text);
-        }
-        .page {
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }
-        header {
-            padding: 16px 24px;
-            border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            backdrop-filter: blur(16px);
-            background: linear-gradient(to right, rgba(15, 23, 42, 0.9), rgba(15, 23, 42, 0.7));
-            position: sticky;
-            top: 0;
-            z-index: 10;
-        }
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        .logo-icon {
-            width: 32px;
-            height: 32px;
-            border-radius: 10px;
-            background: conic-gradient(from 210deg, #3b82f6, #22c55e, #a855f7, #3b82f6);
-            position: relative;
-            overflow: hidden;
-        }
-        .logo-icon::after {
-            content: "";
-            position: absolute;
-            inset: 2px;
-            border-radius: 8px;
-            background: radial-gradient(circle at 30% 20%, rgba(148, 163, 184, 0.7), transparent 55%);
-        }
-        .logo-text-main {
-            font-weight: 600;
-            letter-spacing: 0.03em;
-        }
-        .logo-text-sub {
-            font-size: 12px;
-            color: var(--text-soft);
-        }
-        main {
-            flex: 1;
-            padding: 24px;
-            max-width: 1200px;
-            margin: 0 auto;
-            width: 100%;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: 2.1fr 1.4fr;
-            gap: 20px;
-        }
-        @media (max-width: 960px) {
-            .grid {
-                grid-template-columns: 1fr;
-            }
-        }
-        .card {
-            background: radial-gradient(circle at top left, rgba(148, 163, 184, 0.16), transparent 55%), var(--bg-elevated);
-            border-radius: 16px;
-            padding: 18px 18px 16px;
-            border: 1px solid rgba(31, 41, 55, 0.9);
-            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.7);
-        }
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        .card-title {
-            font-size: 15px;
-            font-weight: 600;
-        }
-        .card-subtitle {
-            font-size: 12px;
-            color: var(--text-soft);
-        }
-        .pill {
-            padding: 3px 10px;
-            border-radius: 999px;
-            font-size: 11px;
-            border: 1px solid rgba(148, 163, 184, 0.35);
-            color: var(--text-soft);
-        }
-        .pill-success {
-            border-color: rgba(34, 197, 94, 0.55);
-            color: var(--success);
-            background: rgba(22, 163, 74, 0.08);
-        }
-        .pill-warning {
-            border-color: rgba(245, 158, 11, 0.55);
-            color: var(--warning);
-            background: rgba(245, 158, 11, 0.06);
-        }
-        .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 10px;
-            margin-top: 8px;
-        }
-        @media (max-width: 960px) {
-            .metrics-grid {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-            }
-        }
-        .metric {
-            padding: 8px 9px;
-            border-radius: 12px;
-            border: 1px solid rgba(31, 41, 55, 0.9);
-            background: radial-gradient(circle at top, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0.96));
-        }
-        .metric-label {
-            font-size: 11px;
-            color: var(--text-soft);
-        }
-        .metric-value {
-            margin-top: 3px;
-            font-size: 15px;
-            font-weight: 500;
-        }
-        .metric-value.positive {
-            color: var(--success);
-        }
-        .metric-value.negative {
-            color: var(--danger);
-        }
-        .section-title {
-            margin-top: 16px;
-            margin-bottom: 6px;
-            font-size: 12px;
-            color: var(--text-soft);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-        }
-        .table-like {
-            border-radius: 12px;
-            border: 1px solid rgba(31, 41, 55, 0.9);
-            overflow: hidden;
-            font-size: 12px;
-        }
-        .table-row {
-            display: grid;
-            grid-template-columns: 150px 1fr;
-            padding: 7px 10px;
-            border-bottom: 1px solid rgba(31, 41, 55, 0.9);
-        }
-        .table-row:nth-child(even) {
-            background: rgba(15, 23, 42, 0.96);
-        }
-        .table-key {
-            color: var(--text-soft);
-        }
-        .table-value {
-            word-break: break-all;
-        }
-        .table-row:last-child {
-            border-bottom: none;
-        }
-        form {
-            margin-top: 6px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-        .field-group {
-            display: flex;
-            gap: 8px;
-        }
-        .field {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-        }
-        label {
-            font-size: 12px;
-            color: var(--text-soft);
-        }
-        input, select, textarea {
-            border-radius: 10px;
-            border: 1px solid rgba(31, 41, 55, 0.9);
-            background: rgba(15, 23, 42, 0.96);
-            color: var(--text);
-            font-size: 13px;
-            padding: 7px 9px;
-            outline: none;
-            transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
-        }
-        input:focus, select:focus, textarea:focus {
-            border-color: rgba(59, 130, 246, 0.9);
-            box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.6);
-            background: rgba(15, 23, 42, 0.98);
-        }
-        button {
-            border-radius: 999px;
-            border: none;
-            padding: 8px 14px;
-            font-size: 13px;
-            font-weight: 500;
-            background: linear-gradient(135deg, #2563eb, #0ea5e9);
-            color: white;
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            box-shadow: 0 8px 18px rgba(37, 99, 235, 0.45);
-            transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.08s ease;
-        }
-        button:hover {
-            transform: translateY(-1px);
-            filter: brightness(1.05);
-            box-shadow: 0 12px 30px rgba(37, 99, 235, 0.65);
-        }
-        button:active {
-            transform: translateY(0);
-            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.9);
-        }
-        .btn-secondary {
-            background: rgba(15, 23, 42, 1);
-            border: 1px solid rgba(31, 41, 55, 0.9);
-            box-shadow: none;
-        }
-        .btn-secondary:hover {
-            filter: none;
-            background: rgba(15, 23, 42, 1);
-            box-shadow: 0 6px 16px rgba(15, 23, 42, 0.85);
-        }
-        .status-line {
-            margin-top: 8px;
-            font-size: 12px;
-            min-height: 18px;
-        }
-        .status-success { color: var(--success); }
-        .status-error { color: var(--danger); }
-        footer {
-            padding: 10px 24px 18px;
-            font-size: 11px;
-            color: rgba(148, 163, 184, 0.8);
-            text-align: right;
-        }
-        code {
-            font-size: 11px;
-            background: rgba(15, 23, 42, 0.96);
-            padding: 2px 4px;
-            border-radius: 4px;
-        }
+        body { padding-top: 20px; background-color: #f8f9fa; }
+        .card-header { font-weight: bold; }
+        .history-table td { font-size: 0.9rem; vertical-align: middle; }
+        .badge-ip { font-family: monospace; }
+        .raw-preview { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .command-item { background: #e9ecef; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
     </style>
 </head>
 <body>
-<div class="page">
-    <header>
-        <div class="logo">
-            <div class="logo-icon"></div>
-            <div>
-                <div class="logo-text-main">MT4 Remote Trade Hub</div>
-                <div class="logo-text-sub">Flask 网关 · 账户监控 & 指令下发</div>
+    <div class="container">
+        <h1 class="mb-4">📊 MT4 远程交易执行</h1>
+        
+        <!-- 最新上报数据卡片 -->
+        <div class="card mb-4">
+            <div class="card-header bg-primary text-white">📨 最新接收的数据</div>
+            <div class="card-body">
+                {% if history %}
+                    {% set last = history[0] %}
+                    <div class="row">
+                        <div class="col-md-3"><strong>账户:</strong> {{ last.account or 'N/A' }}</div>
+                        <div class="col-md-3"><strong>服务器:</strong> {{ last.server or 'N/A' }}</div>
+                        <div class="col-md-2"><strong>余额:</strong> {{ last.balance or 'N/A' }}</div>
+                        <div class="col-md-2"><strong>净值:</strong> {{ last.equity or 'N/A' }}</div>
+                        <div class="col-md-2"><strong>浮动盈亏:</strong> {{ last.floating_pnl or 'N/A' }}</div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-12">
+                            <strong>时间/IP:</strong> {{ last.received_at }} 来自 {{ last.ip }}
+                            <span class="badge bg-secondary">{{ last.method }} {{ last.path }}</span>
+                        </div>
+                    </div>
+                    <div class="row mt-2">
+                        <div class="col-12">
+                            <strong>原始Body预览:</strong>
+                            <pre class="bg-light p-2 rounded" style="font-size:0.8rem;">{{ last.body_raw }}</pre>
+                        </div>
+                    </div>
+                {% else %}
+                    <p class="text-muted">尚未收到任何MT4上报数据。</p>
+                {% endif %}
             </div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;">
-            <span class="pill">
-                上次心跳：
-                {% if report.received_at %}
-                    {{ report.received_at }}
-                {% else %}
-                    暂无
-                {% endif %}
-            </span>
-        </div>
-    </header>
-    <main>
-        <div class="grid">
-            <!-- 左侧：账户与风控信息 -->
-            <section class="card">
-                <div class="card-header">
-                    <div>
-                        <div class="card-title">账户概览</div>
-                        <div class="card-subtitle">展示最近一次 MT4 上报的净值、保证金、风险水平等</div>
+
+        <!-- 两列布局：左侧历史记录，右侧指令管理 -->
+        <div class="row">
+            <!-- 左侧：历史记录表 -->
+            <div class="col-lg-7 mb-4">
+                <div class="card h-100">
+                    <div class="card-header bg-secondary text-white">📜 最近上报历史 (最多{{ history|length }}/{{ MAX_HISTORY }})</div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover history-table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>时间</th>
+                                        <th>账户</th>
+                                        <th>余额</th>
+                                        <th>净值</th>
+                                        <th>浮动盈亏</th>
+                                        <th>IP</th>
+                                        <th>原始数据</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for rec in history %}
+                                    <tr>
+                                        <td>{{ rec.received_at.split(' ')[1] }}</td>
+                                        <td>{{ rec.account or '-' }}</td>
+                                        <td>{{ rec.balance or '-' }}</td>
+                                        <td>{{ rec.equity or '-' }}</td>
+                                        <td>{{ rec.floating_pnl or '-' }}</td>
+                                        <td><span class="badge-ip">{{ rec.ip }}</span></td>
+                                        <td>
+                                            <button class="btn btn-sm btn-outline-info" type="button" 
+                                                    data-bs-toggle="collapse" data-bs-target="#raw-{{ loop.index }}" 
+                                                    aria-expanded="false">预览</button>
+                                            <div class="collapse mt-1" id="raw-{{ loop.index }}">
+                                                <div class="card card-body p-2">
+                                                    <small>{{ rec.body_raw }}</small>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="7" class="text-center text-muted">暂无历史数据</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
-                    {% if report.body and report.body.account %}
-                        <div class="pill-success">
-                            账号：{{ report.body.account }} · {{ report.body.server }}
-                        </div>
-                    {% else %}
-                        <div class="pill-warning">
-                            等待 MT4 调用 <code>/web/api/echo</code> 上报数据
-                        </div>
-                    {% endif %}
                 </div>
+            </div>
 
-                {% if report.body and report.body.account %}
-                    {% set b = report.body %}
-                    <div class="metrics-grid">
-                        <div class="metric">
-                            <div class="metric-label">Balance / Equity</div>
-                            <div class="metric-value">
-                                {{ "%.2f"|format(b.balance) }} / {{ "%.2f"|format(b.equity) }}
-                            </div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Free Margin</div>
-                            <div class="metric-value">{{ "%.2f"|format(b.free_margin) }}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Used Margin</div>
-                            <div class="metric-value">{{ "%.2f"|format(b.margin) }}</div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">Margin Level</div>
-                            <div class="metric-value {% if b.margin_level < 150 %}negative{% elif b.margin_level < 300 %}warning{% else %}positive{% endif %}">
-                                {{ "%.1f"|format(b.margin_level) }}%
-                            </div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">浮动盈亏</div>
-                            <div class="metric-value {% if b.floating_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                                {{ "%.2f"|format(b.floating_pnl) }}
-                            </div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">当日盈亏</div>
-                            <div class="metric-value {% if b.daily_pnl >= 0 %}positive{% else %}negative{% endif %}">
-                                {{ "%.2f"|format(b.daily_pnl) }}
-                            </div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">当日收益率</div>
-                            <div class="metric-value {% if b.daily_return >= 0 %}positive{% else %}negative{% endif %}">
-                                {{ "%.3f"|format(b.daily_return * 100) }}%
-                            </div>
-                        </div>
-                        <div class="metric">
-                            <div class="metric-label">杠杆 / 敞口</div>
-                            <div class="metric-value">
-                                {{ "%.1f"|format(b.leverage_used) }} ×
-                            </div>
-                        </div>
+            <!-- 右侧：指令队列 + 发单表单 -->
+            <div class="col-lg-5 mb-4">
+                <!-- 指令队列卡片 -->
+                <div class="card mb-4">
+                    <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                        <span>⏳ 待发送指令队列 ({{ commands|length }})</span>
+                        <form method="post" action="{{ url_for('clear_commands') }}" style="display:inline;">
+                            <button type="submit" class="btn btn-sm btn-light" onclick="return confirm('确定清空所有指令？')">清空全部</button>
+                        </form>
                     </div>
-
-                    <div class="section-title">风险标记 & 性能指标</div>
-                    <div class="table-like">
-                        <div class="table-row">
-                            <div class="table-key">风险标记</div>
-                            <div class="table-value">{{ b.risk_flags or "-" }}</div>
-                        </div>
-                        <div class="table-row">
-                            <div class="table-key">最近 HTTP 状态</div>
-                            <div class="table-value">
-                                {% if b.metrics %}
-                                    {{ b.metrics.last_http_code }} · {{ b.metrics.last_error }}
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="table-row">
-                            <div class="table-key">最近轮询延迟</div>
-                            <div class="table-value">
-                                {% if b.metrics %}
-                                    {{ "%.0f"|format(b.metrics.poll_latency_ms) }} ms
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="table-row">
-                            <div class="table-key">暴露名义本金</div>
-                            <div class="table-value">
-                                {{ "%.0f"|format(b.exposure_notional) }}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="section-title">当前持仓 / 仓位明细</div>
-                    {% set positions = b.positions or b.open_positions or b.orders %}
-                    {% if positions %}
-                        <div class="table-like" style="max-height:220px;overflow:auto;">
-                            <div class="table-row" style="font-weight:500;font-size:11px;">
-                                <div class="table-key">Symbol / Ticket</div>
-                                <div class="table-value">Volume · Type · Price · SL · TP · Profit</div>
-                            </div>
-                            {% for p in positions %}
-                                <div class="table-row">
-                                    <div class="table-key">
-                                        {{ p.symbol or p.Symbol or p.ticket or p.Ticket or "-" }}
-                                    </div>
-                                    <div class="table-value">
-                                        手数：{{ p.volume or p.Volume or p.lots or "-" }}
-                                        ｜方向：{{ p.order_type or p.type or p.Type or "-" }}
-                                        ｜开仓价：{{ p.open_price or p.price or "-" }}
-                                        ｜SL：{{ p.sl or p.SL or "-" }}
-                                        ｜TP：{{ p.tp or p.TP or "-" }}
-                                        ｜浮盈：{{ p.profit or p.Profit or "-" }}
-                                    </div>
+                    <div class="card-body">
+                        {% if commands %}
+                            {% for cmd in commands %}
+                            <div class="command-item d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong>{{ cmd.direction }}</strong> {{ cmd.symbol }}  {{ cmd.volume }} 手
+                                    {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
+                                    {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
+                                    <br><small class="text-muted">添加于 {{ cmd.timestamp }}</small>
                                 </div>
-                            {% endfor %}
-                        </div>
-                    {% else %}
-                        <p style="font-size:12px;color:var(--text-soft);margin-top:4px;">
-                            当前上报数据中未包含持仓列表字段（如 <code>positions</code> / <code>open_positions</code>）。
-                            如果在 JSON 中增加这些字段，这里会自动显示仓位明细。
-                        </p>
-                    {% endif %}
-                {% else %}
-                    <p style="font-size:13px;color:var(--text-soft);margin-top:8px;">
-                        暂无账户数据。请在 MT4 EA 中向
-                        <code>POST /web/api/echo</code>
-                        发送你示例中的 JSON，以便在这里查看实时风控信息。
-                    </p>
-                {% endif %}
-
-                <div class="section-title">原始 Headers（调试用）</div>
-                <div class="table-like" style="max-height:140px;overflow:auto;">
-                    {% if report.headers %}
-                        {% for k, v in report.headers.items() %}
-                            <div class="table-row">
-                                <div class="table-key">{{ k }}</div>
-                                <div class="table-value">{{ v }}</div>
+                                <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')">✖</button>
+                                </form>
                             </div>
-                        {% endfor %}
-                    {% else %}
-                        <div class="table-row">
-                            <div class="table-key">提示</div>
-                            <div class="table-value">尚未收到任何请求</div>
-                        </div>
-                    {% endif %}
+                            {% endfor %}
+                        {% else %}
+                            <p class="text-muted mb-0">队列为空，暂无待发指令。</p>
+                        {% endif %}
+                    </div>
                 </div>
 
-                <div class="section-title">原始 Body JSON（数据浏览）</div>
-                <div class="table-like" style="max-height:200px;overflow:auto;">
-                    {% if report.body %}
-                        <pre style="margin:0;padding:8px 10px;white-space:pre;overflow:auto;
-                                   font-family:SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
-                                   font-size:11px;line-height:1.4;">
-{{ report.body | tojson(indent=2) }}
-                        </pre>
-                    {% else %}
-                        <div class="table-row">
-                            <div class="table-key">提示</div>
-                            <div class="table-value">尚未收到任何 Body 数据</div>
-                        </div>
-                    {% endif %}
+                <!-- 发单表单卡片 -->
+                <div class="card">
+                    <div class="card-header bg-warning">✍️ 下达新交易指令</div>
+                    <div class="card-body">
+                        <form method="post" action="{{ url_for('send_command') }}">
+                            <div class="mb-2">
+                                <label class="form-label">品种</label>
+                                <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD" required>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">方向</label>
+                                <select name="direction" class="form-select form-select-sm" required>
+                                    <option value="BUY">买入 (BUY)</option>
+                                    <option value="SELL">卖出 (SELL)</option>
+                                </select>
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">手数</label>
+                                <input type="number" step="0.01" min="0.01" name="volume" class="form-control form-control-sm" value="0.1" required>
+                            </div>
+                            <div class="row">
+                                <div class="col mb-2">
+                                    <label class="form-label">止损 (SL, 可选)</label>
+                                    <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="例如 1.1050">
+                                </div>
+                                <div class="col mb-2">
+                                    <label class="form-label">止盈 (TP, 可选)</label>
+                                    <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="例如 1.1100">
+                                </div>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100 mt-2">➡️ 加入指令队列</button>
+                        </form>
+                        <hr>
+                        <p class="small text-muted mb-0">
+                            * 指令将在下一次MT4上报时被取走。<br>
+                            * 队列支持多条指令，会一次性全部返回（每行一条）。
+                        </p>
+                    </div>
                 </div>
-
-                <div class="section-title">原始 Raw JSON 字符串（完整请求体）</div>
-                <div class="table-like" style="max-height:200px;overflow:auto;">
-                    {% if report.raw_body %}
-                        <pre style="margin:0;padding:8px 10px;white-space:pre-wrap;word-break:break-all;overflow:auto;
-                                   font-family:SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace;
-                                   font-size:11px;line-height:1.4;">
-{{ report.raw_body }}
-                        </pre>
-                    {% else %}
-                        <div class="table-row">
-                            <div class="table-key">提示</div>
-                            <div class="table-value">尚未收到任何 Raw JSON 数据</div>
-                        </div>
-                    {% endif %}
-                </div>
-            </section>
-
-            <!-- 右侧：下单面板 -->
-            <section class="card">
-                <div class="card-header">
-                    <div>
-                        <div class="card-title">下单指令面板</div>
-                        <div class="card-subtitle">通过 Web 下发指令，由 MT4 远程执行</div>
-                    </div>
-                    <button class="btn-secondary" type="button" onclick="resetForm()">
-                        重置
-                    </button>
-                </div>
-
-                <form id="trade-form">
-                    <div class="field-group">
-                        <div class="field">
-                            <label for="symbol">交易品种 Symbol</label>
-                            <input id="symbol" name="symbol" placeholder="例如：EURUSD、XAUUSD" required>
-                        </div>
-                        <div class="field">
-                            <label for="order_type">方向</label>
-                            <select id="order_type" name="order_type" required>
-                                <option value="BUY">BUY（做多）</option>
-                                <option value="SELL">SELL（做空）</option>
-                            </select>
-                        </div>
-                    </div>
-
-                    <div class="field-group">
-                        <div class="field">
-                            <label for="volume">手数 Volume</label>
-                            <input id="volume" name="volume" type="number" step="0.01" min="0.01" value="0.10" required>
-                        </div>
-                        <div class="field">
-                            <label for="price">价格（可选，留空为市价）</label>
-                            <input id="price" name="price" type="number" step="0.00001" placeholder="市价可留空">
-                        </div>
-                    </div>
-
-                    <div class="field-group">
-                        <div class="field">
-                            <label for="sl">止损 SL（可选）</label>
-                            <input id="sl" name="sl" type="number" step="0.00001">
-                        </div>
-                        <div class="field">
-                            <label for="tp">止盈 TP（可选）</label>
-                            <input id="tp" name="tp" type="number" step="0.00001">
-                        </div>
-                    </div>
-
-                    <div class="field">
-                        <label for="comment">订单备注（可选）</label>
-                        <textarea id="comment" name="comment" rows="2" placeholder="例如：来自 Web 面板的信号、策略名等"></textarea>
-                    </div>
-
-                    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px;">
-                        <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-soft);">
-                            <span style="width:6px;height:6px;border-radius:999px;background:#22c55e;"></span>
-                            <span>建议由 MT4 EA 轮询一个 <code>/api/trade</code> 等待队列来执行这些指令</span>
-                        </div>
-                        <button type="submit">
-                            发送下单指令
-                        </button>
-                    </div>
-                </form>
-
-                <div id="status" class="status-line"></div>
-
-                <div class="section-title">如何与 MT4 集成（思路）</div>
-                <ul style="margin:0 0 4px 18px;padding:0;font-size:11px;color:var(--text-soft);line-height:1.5;">
-                    <li>EA 端：定时向 <code>/web/api/echo</code> 上报账户状态（你给的 JSON）</li>
-                    <li>EA 端：每隔 N 秒调用一个（你自定义）<code>/api/next_order</code> 接口取未执行指令</li>
-                    <li>服务器端：在 <code>/api/trade</code> 中把指令写入数据库/队列，<code>/api/next_order</code> 负责派发</li>
-                </ul>
-            </section>
+            </div>
         </div>
-    </main>
-    <footer>
-        运行方式：<code>python app.py</code> &nbsp;·&nbsp; 默认监听 <code>http://127.0.0.1:5000/</code>
-    </footer>
-</div>
+    </div>
 
-<script>
-    function resetForm() {
-        document.getElementById('trade-form').reset();
-        setStatus('', '');
-    }
-
-    function setStatus(message, type) {
-        const el = document.getElementById('status');
-        el.textContent = message || '';
-        el.className = 'status-line' + (type ? ' status-' + type : '');
-    }
-
-    document.getElementById('trade-form').addEventListener('submit', async function (e) {
-        e.preventDefault();
-        setStatus('正在提交指令...', '');
-
-        const formData = new FormData(this);
-
-        try {
-            const res = await fetch('/api/trade', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await res.json();
-            if (!res.ok || data.status !== 'ok') {
-                const msg = (data && data.errors) ? data.errors.join('；') : '未知错误';
-                setStatus('下单失败：' + msg, 'error');
-            } else {
-                setStatus('下单指令已接受：' + JSON.stringify(data.order), 'success');
-            }
-        } catch (err) {
-            setStatus('网络错误或服务器异常：' + err, 'error');
-        }
-    });
-</script>
+    <!-- Bootstrap JS (用于折叠组件) -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
 """
 
-
-# 内存中简单保存最近一次 MT4 上报的数据
-latest_report = {
-    "headers": {},
-    "body": {},
-    "raw_body": "",
-    "received_at": None,
-}
-
-# 内存中保存待执行的下单指令队列（真实环境建议改为数据库/Redis 等）
-pending_orders = []
-
-
-def _normalize_report_body(body_data):
-    """
-    根据实际上报 JSON 的结构做兼容转换：
-    - 如果顶层有 BODY / body 字段，则优先取其为业务数据
-    - 否则直接返回原始 dict
-    """
-    if not isinstance(body_data, dict):
-        return body_data
-
-    body_field = body_data.get("BODY")
-    if isinstance(body_field, dict):
-        return body_field
-
-    body_field_lower = body_data.get("body")
-    if isinstance(body_field_lower, dict):
-        return body_field_lower
-
-    return body_data
-
-
-@app.route("/")
-def index():
-    """
-    网页端首页：
-    - 展示最近一次 MT4 上报的账户/风险数据
-    - 提供下单表单，发送到 /api/trade
-    """
-    return render_template_string(INDEX_HTML, report=latest_report)
-
-
-@app.route("/web/api/echo", methods=["POST"])
-def mt4_echo():
-    """
-    供 MT4 远程执行模块调用的上报接口
-    按你提供的示例：
-    - header 在 request.headers
-    - body 为 JSON（或 x-www-form-urlencoded 里只有一个 JSON 字符串也能兼容）
-    """
-    global latest_report
-
-    # 记录 headers（转成普通 dict 方便在模板中展示）
-    headers_dict = {k: v for k, v in request.headers.items()}
-
-    # 原始请求体（字节 -> 字符串），用于页面上展示“raw JSON”
-    raw_body_text = request.get_data(as_text=True) or ""
-
-    # 兼容多种 body 格式：
-    # 1) Content-Type: application/json  => request.get_json()
-    # 2) Content-Type: application/x-www-form-urlencoded 且只有一个 JSON 字符串字段
-    # 3) 其他类型（text/plain 等），直接从 raw_body_text 里解析 JSON
-    body_data = None
-    if request.is_json:
-        body_data = request.get_json(silent=True)
-    else:
-        from json import loads
-
-        # 先尝试从 form 里取第一个字段并当作 JSON
-        try:
-            if request.form:
-                # 取第一个 key 的 value
-                first_key = next(iter(request.form.keys()))
-                body_data = loads(first_key)
-        except Exception:
-            body_data = None
-
-        # 如果还没解析到，再尝试直接用原始 body 做 JSON 解析
-        if body_data is None:
-            try:
-                text = raw_body_text.strip()
-                if text:
-                    body_data = loads(text)
-            except Exception:
-                body_data = {}
-
-    normalized_body = _normalize_report_body(body_data or {})
-
-    latest_report = {
-        "headers": headers_dict,
-        "body": normalized_body,
-        "raw_body": raw_body_text,
-        "received_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-    }
-
-    # 这里简单回显，真实环境你可以按 MT4 EA 的协议返回内容
-    return jsonify(
-        {
-            "status": "ok",
-            "message": "report received",
-            "data": latest_report["body"],
-        }
-    )
-
-
-@app.route("/api/trade", methods=["POST"])
-def trade_api():
-    """
-    网页端提交下单指令到此接口。
-    返回 JSON，供前端显示“下单成功/失败”。
-    实际对接 MT4 时，你可以：
-    - 把指令写到数据库/队列，由 EA 定时拉取并执行
-    - 或直接让 EA 调用这个接口，接收指令后立即执行
-    """
-    data = request.form or request.json or {}
-
-    symbol = data.get("symbol")
-    order_type = data.get("order_type")  # BUY / SELL
-    volume = data.get("volume")
-    price = data.get("price")  # 可选：市价可以不填
-    sl = data.get("sl")  # 止损
-    tp = data.get("tp")  # 止盈
-    comment = data.get("comment", "")
-
-    # 这里只做演示性的校验和 echo
-    errors = []
-    if not symbol:
-        errors.append("交易品种(symbol)不能为空")
-    if order_type not in ("BUY", "SELL"):
-        errors.append("订单方向(order_type)必须为 BUY 或 SELL")
-    try:
-        volume_val = float(volume)
-        if volume_val <= 0:
-            errors.append("手数(volume)必须大于 0")
-    except (TypeError, ValueError):
-        errors.append("手数(volume)必须为数字")
-
-    if errors:
-        return jsonify({"status": "error", "errors": errors}), 400
-
-    trade_order = {
-        "symbol": symbol,
-        "order_type": order_type,
-        "volume": volume_val,
-        "price": price,
-        "sl": sl,
-        "tp": tp,
-        "comment": comment,
-        "created_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
-    }
-
-    # 简单写入内存队列，供 MT4 EA 轮询 /api/next_order 拉取执行
-    pending_orders.append(trade_order)
-
-    return jsonify({"status": "ok", "order": trade_order})
-
-
-@app.route("/api/next_order", methods=["GET"])
-def next_order():
-    """
-    供 MT4 EA 轮询调用：
-    - 如果有尚未执行的订单，则弹出（pop）一条返回
-    - 如果没有，则返回 status=no_order
-    真实环境建议增加鉴权（token）、账户绑定等逻辑
-    """
-    if not pending_orders:
-        return jsonify({"status": "no_order"})
-
-    order = pending_orders.pop(0)
-    return jsonify({"status": "ok", "order": order})
-
-
-if __name__ == "__main__":
-    # 开发环境运行，生产可以用 gunicorn / waitress 等 WSGI 服务器
-    app.run(host="0.0.0.0", port=5000, debug=True)
-
+# ==================== 启动 ====================
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)  # 生产环境建议关闭debug
