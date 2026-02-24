@@ -627,25 +627,33 @@ def mt4_echo():
     # 原始请求体（字节 -> 字符串），用于页面上展示“raw JSON”
     raw_body_text = request.get_data(as_text=True) or ""
 
-    # 兼容两种 body 格式：
+    # 兼容多种 body 格式：
     # 1) Content-Type: application/json  => request.get_json()
     # 2) Content-Type: application/x-www-form-urlencoded 且只有一个 JSON 字符串字段
+    # 3) 其他类型（text/plain 等），直接从 raw_body_text 里解析 JSON
     body_data = None
     if request.is_json:
         body_data = request.get_json(silent=True)
     else:
-        # 尝试从 form 里取第一个字段并当作 JSON
-        try:
-            from json import loads
+        from json import loads
 
+        # 先尝试从 form 里取第一个字段并当作 JSON
+        try:
             if request.form:
                 # 取第一个 key 的 value
                 first_key = next(iter(request.form.keys()))
                 body_data = loads(first_key)
-            else:
-                body_data = {}
         except Exception:
-            body_data = {}
+            body_data = None
+
+        # 如果还没解析到，再尝试直接用原始 body 做 JSON 解析
+        if body_data is None:
+            try:
+                text = raw_body_text.strip()
+                if text:
+                    body_data = loads(text)
+            except Exception:
+                body_data = {}
 
     latest_report = {
         "headers": headers_dict,
