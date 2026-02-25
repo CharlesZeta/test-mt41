@@ -4,7 +4,7 @@ import threading
 import traceback
 from datetime import datetime
 from collections import deque
-from flask import Flask, request, render_template_string, redirect, url_for
+from flask import Flask, request, render_template_string, redirect, url_for, jsonify
 
 app = Flask(__name__)
 
@@ -19,7 +19,7 @@ cmd_counter = 0
 
 # ==================== 工具函数 ====================
 def format_command(cmd):
-    """将指令字典格式化为字符串，供MT4解析"""
+    """将指令字典格式化为字符串，供MT4解析（用于旧版 /web/api/echo 响应）"""
     base = f"{cmd['direction']},{cmd['symbol']},{cmd['volume']}"
     if cmd['sl'] is not None and cmd['tp'] is not None:
         return f"{base},{cmd['sl']},{cmd['tp']}"
@@ -34,11 +34,56 @@ def get_client_ip():
     """尝试从请求头获取真实IP"""
     return request.headers.get('X-Real-Ip') or request.headers.get('X-Forwarded-For', request.remote_addr)
 
+def store_mt4_data(raw_body, client_ip, headers_dict):
+    """通用函数：解析并存储 MT4 上报数据，返回解析结果和记录（供所有接口使用）"""
+    cleaned_body = raw_body.strip()
+    parsed_json = None
+    parse_error = None
+    parse_error_detail = None
+    remaining_data = None
+
+    try:
+        decoder = json.JSONDecoder()
+        parsed_json, idx = decoder.raw_decode(cleaned_body)
+        remaining = cleaned_body[idx:].strip()
+        if remaining:
+            remaining_data = remaining[:200]
+            print(f"检测到JSON后剩余数据: {remaining_data}")
+    except json.JSONDecodeError as e:
+        parse_error = str(e)
+        parse_error_detail = traceback.format_exc()
+        print(f"JSON解析错误: {e}")
+        print(f"原始body(前500字符): {cleaned_body[:500]}")
+    except Exception as e:
+        parse_error = f"未知异常: {str(e)}"
+        parse_error_detail = traceback.format_exc()
+        print(f"解析时发生未知异常: {e}")
+
+    record = {
+        'received_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'ip': client_ip,
+        'method': request.method,
+        'path': request.path,
+        'headers': headers_dict,
+        'body_raw': raw_body,
+        'parsed': parsed_json,
+        'parse_error': parse_error,
+        'parse_error_detail': parse_error_detail,
+        'remaining_data': remaining_data,
+        'account': parsed_json.get('account') if parsed_json else None,
+        'server': parsed_json.get('server') if parsed_json else None,
+        'balance': parsed_json.get('balance') if parsed_json else None,
+        'equity': parsed_json.get('equity') if parsed_json else None,
+        'floating_pnl': parsed_json.get('floating_pnl') if parsed_json else None,
+    }
+
+    with history_lock:
+        history.appendleft(record)
+
+    return parsed_json, record
+
 def extract_latest_details(record):
-    """
-    从记录中提取详细字段，用于模板展示。
-    即使解析失败也返回一个包含错误信息的字典，确保模板总能拿到数据。
-    """
+    """从记录中提取详细字段，用于模板展示"""
     if not record:
         return None
 
@@ -53,7 +98,7 @@ def extract_latest_details(record):
             **base_info,
             'error': f"JSON 解析失败: {record['parse_error']}",
             'full_error': record.get('parse_error_detail', ''),
-            'remaining_data': record.get('remaining_data')  # 如果有剩余数据，显示
+            'remaining_data': record.get('remaining_data')
         }
 
     parsed = record.get('parsed')
@@ -92,11 +137,11 @@ def extract_latest_details(record):
         'remaining_data': record.get('remaining_data')
     }
 
-# ==================== 路由 ====================
+# ==================== 路由：主页 ====================
 @app.route('/')
 def index():
     with history_lock:
-        hist_list = list(reversed(history))  # 最新的在前
+        hist_list = list(reversed(history))
         latest_record = hist_list[0] if hist_list else None
         latest_detail = extract_latest_details(latest_record)
     with commands_lock:
@@ -110,59 +155,16 @@ def index():
         MAX_HISTORY=MAX_HISTORY
     )
 
+# ==================== 旧版 /web/api/echo 接口（保留，用于调试）====================
 @app.route('/web/api/echo', methods=['POST'])
-def mt4_webhook():
+def mt4_webhook_echo():
     raw_body = request.get_data(as_text=True)
-    cleaned_body = raw_body.strip()
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
 
-    parsed_json = None
-    parse_error = None
-    parse_error_detail = None
-    remaining_data = None
+    parsed_json, record = store_mt4_data(raw_body, client_ip, headers_dict)
 
-    try:
-        # 使用 raw_decode 解析第一个 JSON 对象，并获取剩余部分
-        decoder = json.JSONDecoder()
-        parsed_json, idx = decoder.raw_decode(cleaned_body)
-        remaining = cleaned_body[idx:].strip()
-        if remaining:
-            remaining_data = remaining[:200]  # 记录前200字符用于调试
-            print(f"检测到JSON后剩余数据: {remaining_data}")
-    except json.JSONDecodeError as e:
-        parse_error = str(e)
-        parse_error_detail = traceback.format_exc()
-        print(f"JSON解析错误: {e}")
-        print(f"原始body(前500字符): {cleaned_body[:500]}")
-    except Exception as e:
-        parse_error = f"未知异常: {str(e)}"
-        parse_error_detail = traceback.format_exc()
-        print(f"解析时发生未知异常: {e}")
-
-    record = {
-        'received_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'ip': client_ip,
-        'method': request.method,
-        'path': request.path,
-        'headers': headers_dict,
-        'body_raw': raw_body,
-        'parsed': parsed_json,
-        'parse_error': parse_error,
-        'parse_error_detail': parse_error_detail,
-        'remaining_data': remaining_data,
-        # 为快速展示提取部分字段（表格中用）
-        'account': parsed_json.get('account') if parsed_json else None,
-        'server': parsed_json.get('server') if parsed_json else None,
-        'balance': parsed_json.get('balance') if parsed_json else None,
-        'equity': parsed_json.get('equity') if parsed_json else None,
-        'floating_pnl': parsed_json.get('floating_pnl') if parsed_json else None,
-    }
-
-    with history_lock:
-        history.appendleft(record)
-
-    # 准备响应指令
+    # 返回纯文本指令，并清空所有指令（无账户过滤）
     response_lines = []
     with commands_lock:
         if commands:
@@ -175,9 +177,77 @@ def mt4_webhook():
     else:
         return 'NOCOMMAND', 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
+# ==================== 新增 MT4 专用接口 ====================
+@app.route('/web/api/mt4/commands', methods=['POST'])
+def mt4_commands():
+    """MT4 轮询获取指令"""
+    raw_body = request.get_data(as_text=True)
+    client_ip = get_client_ip()
+    headers_dict = dict(request.headers)
+
+    parsed_json, record = store_mt4_data(raw_body, client_ip, headers_dict)
+
+    if parsed_json is None:
+        return jsonify({'error': 'Invalid JSON', 'commands': []}), 400
+
+    account = parsed_json.get('account')
+    # max 参数暂未使用，可扩展分页
+
+    # 从命令队列中筛选该账户的指令
+    with commands_lock:
+        account_commands = []
+        remaining_commands = []
+        for cmd in commands:
+            # 如果 cmd 没有 account 字段，视为归属于所有账户（兼容旧数据）
+            if cmd.get('account') is None or cmd.get('account') == account:
+                account_commands.append(cmd)
+            else:
+                remaining_commands.append(cmd)
+        commands[:] = remaining_commands  # 更新队列，移除已取走的指令
+
+    return jsonify({'commands': account_commands}), 200
+
+@app.route('/web/api/mt4/status', methods=['POST'])
+def mt4_status():
+    """MT4 上报账户状态"""
+    raw_body = request.get_data(as_text=True)
+    client_ip = get_client_ip()
+    headers_dict = dict(request.headers)
+    store_mt4_data(raw_body, client_ip, headers_dict)
+    return 'OK', 200
+
+@app.route('/web/api/mt4/positions', methods=['POST'])
+def mt4_positions():
+    """MT4 上报持仓"""
+    raw_body = request.get_data(as_text=True)
+    client_ip = get_client_ip()
+    headers_dict = dict(request.headers)
+    store_mt4_data(raw_body, client_ip, headers_dict)
+    return 'OK', 200
+
+@app.route('/web/api/mt4/report', methods=['POST'])
+def mt4_report():
+    """MT4 上报执行报告"""
+    raw_body = request.get_data(as_text=True)
+    client_ip = get_client_ip()
+    headers_dict = dict(request.headers)
+    store_mt4_data(raw_body, client_ip, headers_dict)
+    return 'OK', 200
+
+@app.route('/web/api/mt4/quote', methods=['POST'])
+def mt4_quote():
+    """MT4 上报报价"""
+    raw_body = request.get_data(as_text=True)
+    client_ip = get_client_ip()
+    headers_dict = dict(request.headers)
+    store_mt4_data(raw_body, client_ip, headers_dict)
+    return 'OK', 200
+
+# ==================== 网页指令管理 ====================
 @app.route('/send_command', methods=['POST'])
 def send_command():
     global cmd_counter
+    account = request.form.get('account', '').strip()
     symbol = request.form.get('symbol', '').strip().upper()
     direction = request.form.get('direction', '').strip().upper()
     volume = request.form.get('volume', '').strip()
@@ -194,8 +264,18 @@ def send_command():
     except ValueError:
         return redirect(url_for('index'))
 
+    # 如果未提供账户，尝试从最新历史记录中获取
+    if not account:
+        with history_lock:
+            if history:
+                latest = history[0]
+                account = latest.get('account')
+        if not account:
+            account = 'default'
+
     cmd = {
         'id': cmd_counter,
+        'account': account,
         'symbol': symbol,
         'direction': direction,
         'volume': volume,
@@ -222,7 +302,7 @@ def clear_commands():
         commands.clear()
     return redirect(url_for('index'))
 
-# ==================== HTML模板 ====================
+# ==================== HTML模板（增加账户输入和显示）====================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -252,11 +332,14 @@ HTML_TEMPLATE = """
         <div class="info-box d-flex justify-content-between align-items-center">
             <div>
                 <i class="bi bi-info-circle-fill me-2"></i>
-                <strong>MT4上报接口：</strong> <code>POST /web/api/echo</code> 
+                <strong>MT4专用接口：</strong> 
+                <code>/web/api/mt4/commands</code> (轮询), 
+                <code>/web/api/mt4/status</code> (状态), 
+                <code>/web/api/mt4/positions</code> (持仓)
                 <span class="badge bg-secondary ms-2">等待指令返回</span>
-                <span class="ms-3"><i class="bi bi-arrow-return-right"></i> 响应格式：纯文本，每行一条指令，无指令返回 <code>NOCOMMAND</code></span>
+                <br><small class="text-muted">原 <code>/web/api/echo</code> 接口仍保留，用于调试</small>
             </div>
-            <span class="text-muted small">队列指令将在下次上报时被取走</span>
+            <span class="text-muted small">指令将按账户过滤后返回</span>
         </div>
 
         <!-- 最新上报详细数据卡片 -->
@@ -434,7 +517,7 @@ HTML_TEMPLATE = """
                                     <strong>{{ cmd.direction }}</strong> {{ cmd.symbol }}  {{ cmd.volume }} 手
                                     {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
                                     {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
-                                    <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp }}</small>
+                                    <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp }} | 账户: {{ cmd.account }}</small>
                                 </div>
                                 <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
                                     <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')"><i class="bi bi-x"></i></button>
@@ -453,6 +536,10 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="card-body">
                         <form method="post" action="{{ url_for('send_command') }}">
+                            <div class="mb-2">
+                                <label class="form-label">账户 <span class="text-muted">(可选，默认取最新上报的账户)</span></label>
+                                <input type="text" name="account" class="form-control form-control-sm" placeholder="833711">
+                            </div>
                             <div class="mb-2">
                                 <label class="form-label">品种 <span class="text-muted">(如 EURUSD)</span></label>
                                 <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD" required>
