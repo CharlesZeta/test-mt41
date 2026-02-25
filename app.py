@@ -2189,6 +2189,62 @@ def receive_snapshot():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route("/web/api/mt4/commands", methods=["GET", "POST"])
+def web_mt4_commands():
+    """
+    兼容 MT4 EA 使用的 /web/api/mt4/commands 接口：
+    - EA 使用 POST JSON: {"account": "833711", "max": 50}
+    - 也兼容 GET 查询参数: ?account=833711&max=50
+    始终返回 200 和 {"commands":[...]}，避免 EA 因 4xx 报错。
+    """
+    try:
+        # 先从 query 参数里取
+        account_raw = request.args.get("account")
+        max_count = request.args.get("max", default=50, type=int)
+
+        body_text = request.get_data(as_text=True) or ""
+        data = None
+
+        # 如果有 body，再尝试解析 JSON（忽略解析错误，保证不抛异常）
+        if body_text.strip():
+            try:
+                data = json.loads(body_text)
+            except Exception:
+                data = None
+
+        # 如果 query 里没 account，从 JSON 里取
+        if not account_raw and isinstance(data, dict):
+            account_raw = str(data.get("account") or "").strip()
+            if "max" in data and (max_count is None or max_count == 50):
+                try:
+                    max_count = int(data.get("max"))
+                except Exception:
+                    pass
+
+        # 将 account 转成整数（EA 传的是字符串账号）
+        account = None
+        if account_raw:
+            try:
+                account = int(account_raw)
+            except Exception:
+                # 如果无法转换，就直接返回空命令列表，避免 400
+                return jsonify({"commands": []})
+
+        # 没有账号信息时，也直接返回空命令列表
+        if account is None:
+            return jsonify({"commands": []})
+
+        if max_count is None or max_count <= 0:
+            max_count = 50
+
+        cmds = command_queue.get_commands(account=account, max_count=max_count)
+        return jsonify({"commands": cmds})
+    except Exception as e:
+        # 出现异常时，也尽量保持 200 + 空列表，避免 EA 一直报错
+        print("web_mt4_commands error:", e)
+        return jsonify({"commands": []})
+
+
 @app.get("/mt4/commands")
 def get_commands():
     """
@@ -2885,4 +2941,3 @@ def get_latest_quote(symbol):
 if __name__ == '__main__':
     # 公网部署配置：host='0.0.0.0' 允许外部访问
     app.run(host='0.0.0.0', port=5000, threaded=True, debug=False)
-
