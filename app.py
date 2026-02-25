@@ -4,31 +4,88 @@ import threading
 import traceback
 from datetime import datetime
 from collections import deque
-from flask import Flask, request, render_template_string, redirect, url_for
+from flask import Flask, request, render_template_string, redirect, url_for, jsonify
 
 app = Flask(__name__)
 
 # ==================== 全局数据结构 ====================
+# 账户 / echo 调试日志
 MAX_HISTORY = 50
 history = deque(maxlen=MAX_HISTORY)
 history_lock = threading.Lock()
 
+# 旧版简单命令队列（仍用于网页“快速发单”功能），现在会和生命周期系统联动
 commands = []
 commands_lock = threading.Lock()
-cmd_counter = 0
+
+# 新版：命令生命周期跟踪（created -> dispatched -> executed/failed）
+LIFECYCLE_MAX = 200  # 最多保留最近 200 条命令，用于面板展示
+command_lifecycle = deque(maxlen=LIFECYCLE_MAX)
+lifecycle_lock = threading.Lock()
+
+# 去重用：记录近期开过的 client_nonce，避免同一请求重复消费队列
+seen_nonces = set()
+seen_nonces_lock = threading.Lock()
+
+cmd_id_counter = 1  # 面向 MT4 轮询命令的自增 ID
+cmd_id_lock = threading.Lock()
 
 # ==================== 工具函数 ====================
 def format_command(cmd):
-    """将指令字典格式化为字符串，供MT4解析"""
+    """
+    将指令字典格式化为字符串，供 MT4 解析。
+
+    响应格式（带生命周期 ID）：
+        cmd_id,direction,symbol,volume[,sl][,tp]
+
+    兼容：如果 cmd 中没有 cmd_id 字段，则不加前缀，保持旧格式：
+        direction,symbol,volume[,sl][,tp]
+    """
     base = f"{cmd['direction']},{cmd['symbol']},{cmd['volume']}"
     if cmd['sl'] is not None and cmd['tp'] is not None:
-        return f"{base},{cmd['sl']},{cmd['tp']}"
+        line = f"{base},{cmd['sl']},{cmd['tp']}"
     elif cmd['sl'] is not None:
-        return f"{base},{cmd['sl']},0"
+        line = f"{base},{cmd['sl']},0"
     elif cmd['tp'] is not None:
-        return f"{base},0,{cmd['tp']}"
+        line = f"{base},0,{cmd['tp']}"
     else:
-        return base
+        line = base
+
+    # 如有 cmd_id，前缀一个字段，供 MT4 关联执行结果
+    if 'cmd_id' in cmd:
+        return f"{cmd['cmd_id']},{line}"
+    return line
+
+
+def allocate_cmd_id():
+    """线程安全地分配一个新的命令 ID"""
+    global cmd_id_counter
+    with cmd_id_lock:
+        cid = cmd_id_counter
+        cmd_id_counter += 1
+        return cid
+
+
+def push_lifecycle_snapshot(cmd):
+    """
+    将当前命令状态拍一张快照，推入 lifecycle 队列，用于面板展示。
+    只挑选主要字段，避免 UI 过于杂乱。
+    """
+    snapshot = {
+        'cmd_id': cmd.get('cmd_id') or cmd.get('id'),
+        'symbol': cmd.get('symbol'),
+        'direction': cmd.get('direction'),
+        'volume': cmd.get('volume'),
+        'sl': cmd.get('sl'),
+        'tp': cmd.get('tp'),
+        'status': cmd.get('status', 'pending'),
+        'created_at': cmd.get('created_at'),
+        'dispatched_at': cmd.get('dispatched_at'),
+        'finished_at': cmd.get('finished_at'),
+        'result': cmd.get('result'),
+    }
+    with lifecycle_lock:
+        command_lifecycle.append(snapshot)
 
 def get_client_ip():
     """尝试从请求头获取真实IP"""
@@ -73,6 +130,8 @@ def extract_latest_details(record):
 
     return {
         **base_info,
+        'client_id': parsed.get('client_id'),
+        'client_nonce': parsed.get('client_nonce'),
         'account': parsed.get('account'),
         'server': parsed.get('server'),
         'ts': parsed.get('ts'),
@@ -101,12 +160,15 @@ def index():
         latest_detail = extract_latest_details(latest_record)
     with commands_lock:
         cmds_copy = commands.copy()
+    with lifecycle_lock:
+        lifecycle_list = list(reversed(command_lifecycle))
     return render_template_string(
         HTML_TEMPLATE,
         history=hist_list,
         latest=latest_detail,
         latest_raw=latest_record,
         commands=cmds_copy,
+        lifecycle=lifecycle_list,
         MAX_HISTORY=MAX_HISTORY
     )
 
@@ -121,6 +183,9 @@ def mt4_webhook():
     parse_error = None
     parse_error_detail = None
     remaining_data = None
+    client_id = None
+    client_nonce = None
+    is_duplicate_nonce = False
 
     try:
         # 使用 raw_decode 解析第一个 JSON 对象，并获取剩余部分
@@ -130,6 +195,17 @@ def mt4_webhook():
         if remaining:
             remaining_data = remaining[:200]  # 记录前200字符用于调试
             print(f"检测到JSON后剩余数据: {remaining_data}")
+
+        # 从 JSON 中提取 client_id / client_nonce，用于去重与监控
+        client_id = parsed_json.get('client_id')
+        client_nonce = parsed_json.get('client_nonce')
+        if client_nonce:
+            with seen_nonces_lock:
+                if client_nonce in seen_nonces:
+                    is_duplicate_nonce = True
+                    print(f"检测到重复 client_nonce: {client_nonce}，本次不再消费指令队列")
+                else:
+                    seen_nonces.add(client_nonce)
     except json.JSONDecodeError as e:
         parse_error = str(e)
         parse_error_detail = traceback.format_exc()
@@ -151,6 +227,9 @@ def mt4_webhook():
         'parse_error': parse_error,
         'parse_error_detail': parse_error_detail,
         'remaining_data': remaining_data,
+        'client_id': client_id,
+        'client_nonce': client_nonce,
+        'is_duplicate_nonce': is_duplicate_nonce,
         # 为快速展示提取部分字段（表格中用）
         'account': parsed_json.get('account') if parsed_json else None,
         'server': parsed_json.get('server') if parsed_json else None,
@@ -162,12 +241,26 @@ def mt4_webhook():
     with history_lock:
         history.appendleft(record)
 
-    # 准备响应指令
+    # 如果是重复 nonce，则不再消费指令队列，直接返回标记
+    if is_duplicate_nonce:
+        return 'DUPLICATE', 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
+    # 准备响应指令：取出全部待发送命令并标记为 dispatched
     response_lines = []
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     with commands_lock:
         if commands:
             for cmd in commands:
+                # 没有生命周期 ID 的老命令，补一个
+                if 'cmd_id' not in cmd:
+                    cmd['cmd_id'] = allocate_cmd_id()
+
+                cmd['status'] = 'dispatched'
+                cmd['dispatched_at'] = now_str
                 response_lines.append(format_command(cmd))
+                push_lifecycle_snapshot(cmd)
+
+            # 队列中的命令已被 MT4 取走，从待发队列中移除
             commands.clear()
 
     if response_lines:
@@ -177,7 +270,7 @@ def mt4_webhook():
 
 @app.route('/send_command', methods=['POST'])
 def send_command():
-    global cmd_counter
+    # 通过网页增加一条待发送指令，初始状态为 pending
     symbol = request.form.get('symbol', '').strip().upper()
     direction = request.form.get('direction', '').strip().upper()
     volume = request.form.get('volume', '').strip()
@@ -194,18 +287,28 @@ def send_command():
     except ValueError:
         return redirect(url_for('index'))
 
+    cmd_id = allocate_cmd_id()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
     cmd = {
-        'id': cmd_counter,
+        'id': cmd_id,
+        'cmd_id': cmd_id,
         'symbol': symbol,
         'direction': direction,
         'volume': volume,
         'sl': sl,
         'tp': tp,
-        'timestamp': datetime.now().strftime('%H:%M:%S')
+        'timestamp': datetime.now().strftime('%H:%M:%S'),
+        'status': 'pending',
+        'created_at': now_str,
+        'dispatched_at': None,
+        'finished_at': None,
+        'result': None,
     }
     with commands_lock:
         commands.append(cmd)
-        cmd_counter += 1
+    # 记录生命周期快照（pending）
+    push_lifecycle_snapshot(cmd)
 
     return redirect(url_for('index'))
 
@@ -221,6 +324,57 @@ def clear_commands():
     with commands_lock:
         commands.clear()
     return redirect(url_for('index'))
+
+
+@app.route('/web/api/report_result', methods=['POST'])
+def report_result():
+    """
+    供 MT4 在执行完指令后回调，更新命令生命周期。
+
+    请求 JSON 示例：
+    {
+        "cmd_id": 123,
+        "status": "executed" | "failed",
+        "message": "可选的详细信息"
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    cmd_id = data.get('cmd_id')
+    status = data.get('status') or 'executed'
+    message = data.get('message')
+
+    if cmd_id is None:
+        return jsonify({'ok': False, 'error': 'cmd_id is required'}), 400
+
+    updated = False
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    with lifecycle_lock:
+        # 直接在已有快照中更新（只更新最新一条匹配的记录）
+        for item in reversed(command_lifecycle):
+            if item.get('cmd_id') == cmd_id:
+                item['status'] = status
+                item['finished_at'] = now_str
+                item['result'] = message
+                updated = True
+                break
+
+        # 如果没找到，就补一条最小快照，防止 EA 调用顺序乱掉时丢数据
+        if not updated:
+            command_lifecycle.append({
+                'cmd_id': cmd_id,
+                'symbol': data.get('symbol'),
+                'direction': data.get('direction'),
+                'volume': data.get('volume'),
+                'sl': data.get('sl'),
+                'tp': data.get('tp'),
+                'status': status,
+                'created_at': None,
+                'dispatched_at': None,
+                'finished_at': now_str,
+                'result': message,
+            })
+
+    return jsonify({'ok': True, 'updated': updated})
 
 # ==================== HTML模板 ====================
 HTML_TEMPLATE = """
@@ -253,8 +407,11 @@ HTML_TEMPLATE = """
             <div>
                 <i class="bi bi-info-circle-fill me-2"></i>
                 <strong>MT4上报接口：</strong> <code>POST /web/api/echo</code> 
-                <span class="badge bg-secondary ms-2">等待指令返回</span>
-                <span class="ms-3"><i class="bi bi-arrow-return-right"></i> 响应格式：纯文本，每行一条指令，无指令返回 <code>NOCOMMAND</code></span>
+                <span class="badge bg-secondary ms-2">轮询 + 取指令</span>
+                <span class="ms-3"><i class="bi bi-arrow-return-right"></i> 响应：纯文本，每行一条指令；格式 <code>cmd_id,BUY,EURUSD,0.1[,sl][,tp]</code>，无指令返回 <code>NOCOMMAND</code>，重复 <code>client_nonce</code> 返回 <code>DUPLICATE</code></span>
+                <br>
+                <strong>执行结果回调：</strong> <code>POST /web/api/report_result</code> 
+                <span class="badge bg-info ms-2">上报指令执行结果</span>
             </div>
             <span class="text-muted small">队列指令将在下次上报时被取走</span>
         </div>
@@ -298,6 +455,12 @@ HTML_TEMPLATE = """
                             <div class="stat-item"><span class="stat-label">上次HTTP代码</span><div class="stat-value">{{ latest.last_http_code or 'N/A' }}</div></div>
                             {% if latest.last_error %}
                             <div class="stat-item"><span class="stat-label">错误信息</span><div class="stat-value text-danger">{{ latest.last_error }}</div></div>
+                            {% endif %}
+                            {% if latest.client_id %}
+                            <div class="stat-item"><span class="stat-label">终端ID</span><div class="stat-value">{{ latest.client_id }}</div></div>
+                            {% endif %}
+                            {% if latest.client_nonce %}
+                            <div class="stat-item"><span class="stat-label">请求Nonce</span><div class="stat-value">{{ latest.client_nonce }}</div></div>
                             {% endif %}
                         </div>
 
@@ -443,6 +606,71 @@ HTML_TEMPLATE = """
                             {% endfor %}
                         {% else %}
                             <p class="text-muted mb-0"><i class="bi bi-inbox"></i> 队列为空，暂无待发指令。</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- 指令生命周期监控 -->
+                <div class="card shadow-sm mb-4">
+                    <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-activity"></i> 指令生命周期 (最近 {{ lifecycle|length }} 条)</span>
+                    </div>
+                    <div class="card-body p-0">
+                        {% if lifecycle %}
+                        <div class="table-responsive">
+                            <table class="table table-sm table-striped mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>方向/品种</th>
+                                        <th>手数</th>
+                                        <th>状态</th>
+                                        <th>创建时间</th>
+                                        <th>下发时间</th>
+                                        <th>完成时间</th>
+                                        <th>结果</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for c in lifecycle %}
+                                    <tr>
+                                        <td>{{ c.cmd_id }}</td>
+                                        <td>
+                                            <strong>{{ c.direction }}</strong> {{ c.symbol }}
+                                        </td>
+                                        <td>{{ c.volume }}</td>
+                                        <td>
+                                            {% if c.status == 'pending' %}
+                                                <span class="badge bg-secondary">待发送</span>
+                                            {% elif c.status == 'dispatched' %}
+                                                <span class="badge bg-primary">已下发</span>
+                                            {% elif c.status == 'executed' %}
+                                                <span class="badge bg-success">已执行</span>
+                                            {% elif c.status == 'failed' %}
+                                                <span class="badge bg-danger">失败</span>
+                                            {% else %}
+                                                <span class="badge bg-light text-dark">{{ c.status or '未知' }}</span>
+                                            {% endif %}
+                                        </td>
+                                        <td><small>{{ c.created_at or '-' }}</small></td>
+                                        <td><small>{{ c.dispatched_at or '-' }}</small></td>
+                                        <td><small>{{ c.finished_at or '-' }}</small></td>
+                                        <td>
+                                            {% if c.result %}
+                                                <small title="{{ c.result }}">
+                                                    {{ c.result[:16] }}{% if c.result|length > 16 %}...{% endif %}
+                                                </small>
+                                            {% else %}
+                                                <small class="text-muted">-</small>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        {% else %}
+                            <p class="text-muted m-3"><i class="bi bi-activity"></i> 暂无生命周期记录。</p>
                         {% endif %}
                     </div>
                 </div>
