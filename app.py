@@ -1,6 +1,7 @@
 import os
 import json
 import threading
+import traceback
 from datetime import datetime
 from collections import deque
 from flask import Flask, request, render_template_string, redirect, url_for
@@ -37,7 +38,6 @@ def extract_latest_details(record):
     """
     从记录中提取详细字段，用于模板展示。
     即使解析失败也返回一个包含错误信息的字典，确保模板总能拿到数据。
-    新增：提取 positions 列表，并将时间戳转换为可读字符串。
     """
     if not record:
         return None
@@ -45,15 +45,22 @@ def extract_latest_details(record):
     base_info = {
         'received_at': record.get('received_at'),
         'ip': record.get('ip'),
-        'body_raw_preview': record.get('body_raw', '')[:200] + ('...' if len(record.get('body_raw', '')) > 200 else '')
+        'body_raw_preview': record.get('body_raw', '')[:500] + ('...' if len(record.get('body_raw', '')) > 500 else '')
     }
+
+    # 如果存在解析错误，优先显示错误
+    if record.get('parse_error'):
+        return {
+            **base_info,
+            'error': f"JSON 解析失败: {record['parse_error']}",
+            'full_error': record.get('parse_error_detail', '')
+        }
 
     parsed = record.get('parsed')
     if parsed is None:
-        return {**base_info, 'error': 'JSON 解析失败，原始数据预览如下'}
+        return {**base_info, 'error': 'JSON 解析失败，但无具体错误信息'}
 
     metrics = parsed.get('metrics', {})
-    # 提取 positions 列表（如果存在）
     positions = parsed.get('positions', [])
     # 转换 open_time 为可读字符串
     for pos in positions:
@@ -82,7 +89,7 @@ def extract_latest_details(record):
         'poll_latency_ms': metrics.get('poll_latency_ms'),
         'last_http_code': metrics.get('last_http_code'),
         'last_error': metrics.get('last_error'),
-        'positions': positions,  # 新增字段
+        'positions': positions,
     }
 
 # ==================== 路由 ====================
@@ -106,14 +113,26 @@ def index():
 @app.route('/web/api/echo', methods=['POST'])
 def mt4_webhook():
     raw_body = request.get_data(as_text=True)
+    # 去除首尾空白，避免BOM或换行符影响解析
+    cleaned_body = raw_body.strip()
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
 
     parsed_json = None
+    parse_error = None
+    parse_error_detail = None
     try:
-        parsed_json = json.loads(raw_body)
-    except json.JSONDecodeError:
-        pass  # 解析失败，parsed_json 保持 None
+        parsed_json = json.loads(cleaned_body)
+    except json.JSONDecodeError as e:
+        parse_error = str(e)
+        parse_error_detail = traceback.format_exc()
+        # 打印错误到控制台，便于在Railway日志中查看
+        print(f"JSON解析错误: {e}")
+        print(f"原始body(前200字符): {cleaned_body[:200]}")
+    except Exception as e:
+        parse_error = f"未知异常: {str(e)}"
+        parse_error_detail = traceback.format_exc()
+        print(f"解析时发生未知异常: {e}")
 
     record = {
         'received_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -121,8 +140,10 @@ def mt4_webhook():
         'method': request.method,
         'path': request.path,
         'headers': headers_dict,
-        'body_raw': raw_body,
+        'body_raw': raw_body,  # 保存原始未strip的版本，以防需要
         'parsed': parsed_json,
+        'parse_error': parse_error,
+        'parse_error_detail': parse_error_detail,
         # 为快速展示提取部分字段（表格中用）
         'account': parsed_json.get('account') if parsed_json else None,
         'server': parsed_json.get('server') if parsed_json else None,
@@ -242,6 +263,9 @@ HTML_TEMPLATE = """
                         <div class="alert alert-warning">
                             <i class="bi bi-exclamation-triangle"></i> {{ latest.error }}
                             <br><small>原始数据预览：{{ latest.body_raw_preview }}</small>
+                            {% if latest.full_error %}
+                            <pre class="mt-2 bg-light p-2 rounded" style="font-size:0.75rem;">{{ latest.full_error }}</pre>
+                            {% endif %}
                         </div>
                     {% else %}
                         <div class="stat-grid">
