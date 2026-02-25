@@ -5,7 +5,7 @@ import traceback
 import time
 import random
 import string
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from collections import deque
 from flask import Flask, request, render_template_string, redirect, url_for, jsonify
 
@@ -24,13 +24,26 @@ cmd_counter = 0
 paused = False
 pause_lock = threading.Lock()
 
+# ==================== 时间限制函数 ====================
+def is_restricted_time():
+    """判断当前时间是否处于限制时段（0:30 - 4:30）"""
+    now = datetime.now()
+    hour = now.hour
+    minute = now.minute
+    # 0:30 到 4:30 包含边界
+    if hour == 0 and minute >= 30:
+        return True
+    if 1 <= hour <= 3:
+        return True
+    if hour == 4 and minute <= 30:
+        return True
+    return False
+
 # ==================== 工具函数 ====================
 def generate_nonce():
-    """生成随机 nonce"""
     return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
 def format_command(cmd):
-    """将指令字典格式化为字符串，供旧版 /web/api/echo 使用（保留兼容性）"""
     base = f"{cmd['direction']},{cmd['symbol']},{cmd['volume']}"
     if cmd.get('sl') is not None and cmd.get('tp') is not None:
         return f"{base},{cmd['sl']},{cmd['tp']}"
@@ -176,6 +189,10 @@ def index():
         cmds_copy = commands.copy()
     with pause_lock:
         current_paused = paused
+
+    # 判断是否处于限制时段
+    restricted = is_restricted_time()
+
     return render_template_string(
         HTML_TEMPLATE,
         history=hist_list,
@@ -183,7 +200,8 @@ def index():
         latest_raw=latest_record,
         commands=cmds_copy,
         MAX_HISTORY=MAX_HISTORY,
-        paused=current_paused
+        paused=current_paused,
+        restricted=restricted  # 传递限制标志
     )
 
 # ==================== 旧版 /web/api/echo 接口 ====================
@@ -199,8 +217,6 @@ def mt4_webhook_echo():
     with commands_lock:
         if commands:
             for cmd in commands:
-                # 为了兼容旧格式，尝试转换为纯文本
-                # 如果指令包含 action，可能需要特殊处理，这里简化
                 response_lines.append(format_command(cmd))
             commands.clear()
 
@@ -212,6 +228,10 @@ def mt4_webhook_echo():
 # ==================== MT4 专用接口 ====================
 @app.route('/web/api/mt4/commands', methods=['POST'])
 def mt4_commands():
+    # 如果处于限制时段，返回空指令
+    if is_restricted_time():
+        return jsonify({'commands': [], 'paused': paused}), 200
+
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
@@ -273,20 +293,24 @@ def mt4_quote():
     store_mt4_data(raw_body, client_ip, headers_dict)
     return 'OK', 200
 
-# ==================== 网页指令管理（增强版）====================
+# ==================== 网页指令管理 ====================
 @app.route('/send_command', methods=['POST'])
 def send_command():
+    # 限制时段禁止发单
+    if is_restricted_time():
+        return redirect(url_for('index'))
+
     global cmd_counter
     account = request.form.get('account', '').strip()
-    cmd_type = request.form.get('cmd_type', 'MARKET')  # MARKET, LIMIT, CLOSE
+    cmd_type = request.form.get('cmd_type', 'MARKET')
     symbol = request.form.get('symbol', '').strip().upper()
-    side = request.form.get('side', '').strip().upper()  # BUY/SELL
+    side = request.form.get('side', '').strip().upper()
     volume = request.form.get('volume', '').strip()
-    price = request.form.get('price', '').strip()  # 用于限价单
+    price = request.form.get('price', '').strip()
     sl = request.form.get('sl', '').strip()
     tp = request.form.get('tp', '').strip()
-    ticket = request.form.get('ticket', '').strip()  # 用于平仓
-    lots = request.form.get('lots', '').strip()  # 平仓手数（可选）
+    ticket = request.form.get('ticket', '').strip()
+    lots = request.form.get('lots', '').strip()
 
     # 基础校验
     if cmd_type in ['MARKET', 'LIMIT']:
@@ -320,14 +344,13 @@ def send_command():
         if not account:
             account = 'default'
 
-    # 构建符合 MT4 EA 期望的指令
     now = int(time.time())
     cmd = {
         'id': str(cmd_counter),
         'account': account,
         'nonce': generate_nonce(),
         'created_at': now,
-        'ttl_sec': 10,  # 默认10秒有效期
+        'ttl_sec': 10,
     }
 
     if cmd_type == 'MARKET':
@@ -339,7 +362,6 @@ def send_command():
             cmd['sl_price'] = sl
         if tp is not None:
             cmd['tp_price'] = tp
-        # 可扩展添加 risk_alloc_pct, max_spread_points 等
     elif cmd_type == 'LIMIT':
         cmd['action'] = 'LIMIT'
         cmd['symbol'] = symbol
@@ -375,7 +397,7 @@ def clear_commands():
         commands.clear()
     return redirect(url_for('index'))
 
-# ==================== HTML模板（增强版）====================
+# ==================== HTML模板（增强版，含限制模式）====================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -397,9 +419,66 @@ HTML_TEMPLATE = """
         .command-item { background: #e9ecef; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
         .info-box { background: #d1e7ff; border-radius: 8px; padding: 12px; margin-bottom: 15px; border-left: 5px solid #0a58ca; }
         .pause-control { background: #f8d7da; border-left: 5px solid #dc3545; }
+
+        /* 限制模式样式 */
+        .restricted-mode {
+            background-color: black !important;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: red;
+            font-size: 4rem;
+            font-weight: bold;
+            text-align: center;
+        }
+        .restricted-mode .status-box {
+            background: rgba(0,0,0,0.7);
+            border: 2px solid red;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            color: white;
+            font-size: 1.5rem;
+        }
+        .restricted-mode .status-box .label {
+            color: #aaa;
+            font-size: 1rem;
+        }
+        .restricted-mode .status-box .value {
+            color: #0f0;
+        }
     </style>
 </head>
 <body>
+    {% if restricted %}
+    <!-- 限制模式显示 -->
+    <div class="restricted-mode">
+        <div class="status-box">
+            <div class="row">
+                <div class="col">
+                    <span class="label">账户</span><br>
+                    <span class="value">{{ latest.account if latest else 'N/A' }}</span>
+                </div>
+                <div class="col">
+                    <span class="label">余额</span><br>
+                    <span class="value">{{ "%.2f"|format(latest.balance) if latest and latest.balance is number else 'N/A' }}</span>
+                </div>
+                <div class="col">
+                    <span class="label">净值</span><br>
+                    <span class="value">{{ "%.2f"|format(latest.equity) if latest and latest.equity is number else 'N/A' }}</span>
+                </div>
+                <div class="col">
+                    <span class="label">浮动盈亏</span><br>
+                    <span class="value">{{ "%.2f"|format(latest.floating_pnl) if latest and latest.floating_pnl is number else 'N/A' }}</span>
+                </div>
+            </div>
+        </div>
+        <div>为人民服务</div>
+    </div>
+    {% else %}
+    <!-- 正常模式显示 -->
     <div class="container">
         <h1 class="mb-3"><i class="bi bi-cpu"></i> MT4 远程交易执行 · 专业监控</h1>
         
@@ -637,8 +716,8 @@ HTML_TEMPLATE = """
                     <div class="card-body">
                         <form method="post" action="{{ url_for('send_command') }}" id="commandForm">
                             <div class="mb-2">
-                                <label class="form-label">账户 <span class="text-muted">(可选，默认取最新上报的账户)</span></label>
-                                <input type="text" name="account" class="form-control form-control-sm" placeholder="833711">
+                                <label class="form-label">账户 <span class="text-muted">(可选，将自动保存)</span></label>
+                                <input type="text" name="account" class="form-control form-control-sm" placeholder="833711" id="accountInput">
                             </div>
                             <div class="mb-2">
                                 <label class="form-label">指令类型</label>
@@ -705,9 +784,25 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
+    {% endif %}
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // 账户本地存储
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedAccount = localStorage.getItem('mt4_default_account');
+            if (savedAccount) {
+                document.getElementById('accountInput').value = savedAccount;
+            }
+        });
+
+        document.getElementById('commandForm')?.addEventListener('submit', function() {
+            const accountInput = document.getElementById('accountInput').value;
+            if (accountInput) {
+                localStorage.setItem('mt4_default_account', accountInput);
+            }
+        });
+
         // 暂停控制
         function updatePauseStatus() {
             fetch('/api/status')
@@ -742,11 +837,10 @@ HTML_TEMPLATE = """
                 .then(data => updatePauseStatus());
         });
 
-        // 每隔5秒自动更新状态（可选）
         setInterval(updatePauseStatus, 5000);
         updatePauseStatus();
 
-        // 指令类型切换显示不同字段
+        // 指令类型切换
         const cmdTypeSelect = document.getElementById('cmdTypeSelect');
         const tradeFields = document.getElementById('tradeFields');
         const limitFields = document.getElementById('limitFields');
@@ -758,7 +852,6 @@ HTML_TEMPLATE = """
             limitFields.style.display = (type === 'LIMIT') ? 'block' : 'none';
             closeFields.style.display = (type === 'CLOSE') ? 'block' : 'none';
 
-            // 移除或添加 required 属性（简单处理）
             document.querySelector('[name="symbol"]').required = (type === 'MARKET' || type === 'LIMIT');
             document.querySelector('[name="side"]').required = (type === 'MARKET' || type === 'LIMIT');
             document.querySelector('[name="volume"]').required = (type === 'MARKET' || type === 'LIMIT');
@@ -766,7 +859,7 @@ HTML_TEMPLATE = """
         }
 
         cmdTypeSelect.addEventListener('change', toggleFields);
-        toggleFields(); // 初始化
+        toggleFields();
     </script>
 </body>
 </html>
