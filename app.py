@@ -43,7 +43,7 @@ def generate_nonce():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
 def format_command(cmd):
-    """将指令字典格式化为字符串，供旧版 /web/api/echo 使用（保留兼容性）"""
+    """将指令字典格式化为字符串，供旧版 /web/api/echo 使用"""
     base = f"{cmd['side']},{cmd['symbol']},{cmd['volume']}"
     if cmd.get('sl_price') is not None and cmd.get('tp_price') is not None:
         return f"{base},{cmd['sl_price']},{cmd['tp_price']}"
@@ -291,7 +291,7 @@ def mt4_quote():
     store_mt4_data(raw_body, client_ip, headers_dict)
     return 'OK', 200
 
-# ==================== 网页指令管理 ====================
+# ==================== 网页指令管理（增强校验）====================
 @app.route('/send_command', methods=['POST'])
 def send_command():
     if is_restricted_time():
@@ -309,12 +309,20 @@ def send_command():
     ticket = request.form.get('ticket', '').strip()
     lots = request.form.get('lots', '').strip()
 
-    # 基础校验
+    # ===== 强校验：确保必要字段有效 =====
     if cmd_type in ['MARKET', 'LIMIT']:
-        if not symbol or side not in ['BUY', 'SELL'] or not volume:
+        if not symbol:
+            print("拒绝发单：symbol 为空")
+            return redirect(url_for('index'))
+        if side not in ['BUY', 'SELL']:
+            print("拒绝发单：side 无效", side)
+            return redirect(url_for('index'))
+        if not volume:
+            print("拒绝发单：volume 为空")
             return redirect(url_for('index'))
     elif cmd_type == 'CLOSE':
         if not ticket:
+            print("拒绝发单：ticket 为空")
             return redirect(url_for('index'))
     else:
         return redirect(url_for('index'))
@@ -322,24 +330,31 @@ def send_command():
     try:
         if cmd_type in ['MARKET', 'LIMIT']:
             volume = float(volume)
+            if volume <= 0:
+                print("拒绝发单：volume 必须 > 0")
+                return redirect(url_for('index'))
             sl = float(sl) if sl else None
             tp = float(tp) if tp else None
         if cmd_type == 'LIMIT':
             price = float(price) if price else 0.0
+            if price <= 0:
+                print("拒绝发单：限价单 price 必须 > 0")
+                return redirect(url_for('index'))
         if cmd_type == 'CLOSE':
             ticket = int(ticket)
             lots = float(lots) if lots else 0.0
     except ValueError:
+        print("拒绝发单：数值转换失败")
         return redirect(url_for('index'))
 
-    # 如果未提供账户，尝试从最新历史记录中获取
+    # 账户处理：如果未提供，尝试从历史记录获取；若仍无，设为空字符串
     if not account:
         with history_lock:
             if history:
                 latest = history[0]
                 account = latest.get('account')
         if not account:
-            account = 'default'
+            account = ""
 
     now = int(time.time())
     cmd = {
@@ -351,16 +366,16 @@ def send_command():
     }
 
     if cmd_type == 'MARKET':
-        cmd['action'] = 'MARKET'
+        cmd['action'] = 'market'
         cmd['symbol'] = symbol
-        cmd['side'] = side.lower()  # 转为小写便于 EA 处理
+        cmd['side'] = side.lower()
         cmd['volume'] = volume
         if sl is not None:
             cmd['sl_price'] = sl
         if tp is not None:
             cmd['tp_price'] = tp
     elif cmd_type == 'LIMIT':
-        cmd['action'] = 'LIMIT'
+        cmd['action'] = 'limit'
         cmd['symbol'] = symbol
         cmd['side'] = side.lower()
         cmd['volume'] = volume
@@ -370,7 +385,7 @@ def send_command():
         if tp is not None:
             cmd['tp'] = tp
     elif cmd_type == 'CLOSE':
-        cmd['action'] = 'CLOSE'
+        cmd['action'] = 'close'
         cmd['ticket'] = ticket
         if lots > 0:
             cmd['lots'] = lots
@@ -394,7 +409,7 @@ def clear_commands():
         commands.clear()
     return redirect(url_for('index'))
 
-# ==================== HTML模板（增强版，含限制模式）====================
+# ==================== HTML模板（完整版）====================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -681,15 +696,15 @@ HTML_TEMPLATE = """
                             <div class="command-item d-flex justify-content-between align-items-center">
                                 <div>
                                     <strong>{{ cmd.action }}</strong>
-                                    {% if cmd.action == 'MARKET' %}
+                                    {% if cmd.action == 'market' %}
                                         {{ cmd.side.upper() }} {{ cmd.symbol }} {{ cmd.volume }}手
                                         {% if cmd.sl_price %} SL:{{ cmd.sl_price }}{% endif %}
                                         {% if cmd.tp_price %} TP:{{ cmd.tp_price }}{% endif %}
-                                    {% elif cmd.action == 'LIMIT' %}
+                                    {% elif cmd.action == 'limit' %}
                                         {{ cmd.side.upper() }} {{ cmd.symbol }} {{ cmd.volume }}手 @ {{ cmd.price }}
                                         {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
                                         {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
-                                    {% elif cmd.action == 'CLOSE' %}
+                                    {% elif cmd.action == 'close' %}
                                         平仓 票号:{{ cmd.ticket }}{% if cmd.lots %} 手数:{{ cmd.lots }}{% endif %}
                                     {% endif %}
                                     <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp if cmd.timestamp else '' }} | 账户: {{ cmd.account }} | ID: {{ cmd.id }}</small>
