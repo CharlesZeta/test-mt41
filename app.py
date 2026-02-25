@@ -37,11 +37,11 @@ def extract_latest_details(record):
     """
     从记录中提取详细字段，用于模板展示。
     即使解析失败也返回一个包含错误信息的字典，确保模板总能拿到数据。
+    新增：提取 positions 列表，并将时间戳转换为可读字符串。
     """
     if not record:
-        return None  # 无记录时返回 None，模板显示无数据
+        return None
 
-    # 基础信息：时间、IP等（始终存在）
     base_info = {
         'received_at': record.get('received_at'),
         'ip': record.get('ip'),
@@ -50,14 +50,21 @@ def extract_latest_details(record):
 
     parsed = record.get('parsed')
     if parsed is None:
-        # 解析失败，返回包含错误提示的字典
-        return {
-            **base_info,
-            'error': 'JSON 解析失败，原始数据预览如下',
-        }
+        return {**base_info, 'error': 'JSON 解析失败，原始数据预览如下'}
 
-    # 解析成功，提取所有需要的字段
     metrics = parsed.get('metrics', {})
+    # 提取 positions 列表（如果存在）
+    positions = parsed.get('positions', [])
+    # 转换 open_time 为可读字符串
+    for pos in positions:
+        if 'open_time' in pos and isinstance(pos['open_time'], (int, float)):
+            try:
+                pos['open_time_str'] = datetime.fromtimestamp(pos['open_time']).strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                pos['open_time_str'] = str(pos['open_time'])
+        else:
+            pos['open_time_str'] = 'N/A'
+
     return {
         **base_info,
         'account': parsed.get('account'),
@@ -75,6 +82,7 @@ def extract_latest_details(record):
         'poll_latency_ms': metrics.get('poll_latency_ms'),
         'last_http_code': metrics.get('last_http_code'),
         'last_error': metrics.get('last_error'),
+        'positions': positions,  # 新增字段
     }
 
 # ==================== 路由 ====================
@@ -255,6 +263,50 @@ HTML_TEMPLATE = """
                             <div class="stat-item"><span class="stat-label">错误信息</span><div class="stat-value text-danger">{{ latest.last_error }}</div></div>
                             {% endif %}
                         </div>
+
+                        <!-- 持仓列表（如果有） -->
+                        {% if latest.positions %}
+                        <div class="mt-4">
+                            <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#positionsCollapse" aria-expanded="false">
+                                <i class="bi bi-list-ul"></i> 显示持仓 ({{ latest.positions|length }})
+                            </button>
+                            <div class="collapse mt-2" id="positionsCollapse">
+                                <div class="card card-body p-0">
+                                    <table class="table table-sm table-striped mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>订单号</th>
+                                                <th>品种</th>
+                                                <th>类型</th>
+                                                <th>手数</th>
+                                                <th>开仓价</th>
+                                                <th>止损</th>
+                                                <th>止盈</th>
+                                                <th>开仓时间</th>
+                                                <th>利润</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for pos in latest.positions %}
+                                            <tr>
+                                                <td>{{ pos.ticket }}</td>
+                                                <td>{{ pos.symbol }}</td>
+                                                <td>{{ pos.type }}</td>
+                                                <td>{{ pos.lots }}</td>
+                                                <td>{{ pos.open_price }}</td>
+                                                <td>{{ pos.sl }}</td>
+                                                <td>{{ pos.tp }}</td>
+                                                <td>{{ pos.open_time_str }}</td>
+                                                <td>{{ "%.2f"|format(pos.profit) if pos.profit is number else pos.profit }}</td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
                     {% endif %}
                     <div class="mt-3">
                         <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#rawJsonPreview" aria-expanded="false">
