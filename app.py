@@ -48,12 +48,12 @@ def extract_latest_details(record):
         'body_raw_preview': record.get('body_raw', '')[:500] + ('...' if len(record.get('body_raw', '')) > 500 else '')
     }
 
-    # 如果存在解析错误，优先显示错误
     if record.get('parse_error'):
         return {
             **base_info,
             'error': f"JSON 解析失败: {record['parse_error']}",
-            'full_error': record.get('parse_error_detail', '')
+            'full_error': record.get('parse_error_detail', ''),
+            'remaining_data': record.get('remaining_data')  # 如果有剩余数据，显示
         }
 
     parsed = record.get('parsed')
@@ -62,7 +62,6 @@ def extract_latest_details(record):
 
     metrics = parsed.get('metrics', {})
     positions = parsed.get('positions', [])
-    # 转换 open_time 为可读字符串
     for pos in positions:
         if 'open_time' in pos and isinstance(pos['open_time'], (int, float)):
             try:
@@ -90,6 +89,7 @@ def extract_latest_details(record):
         'last_http_code': metrics.get('last_http_code'),
         'last_error': metrics.get('last_error'),
         'positions': positions,
+        'remaining_data': record.get('remaining_data')
     }
 
 # ==================== 路由 ====================
@@ -113,7 +113,6 @@ def index():
 @app.route('/web/api/echo', methods=['POST'])
 def mt4_webhook():
     raw_body = request.get_data(as_text=True)
-    # 去除首尾空白，避免BOM或换行符影响解析
     cleaned_body = raw_body.strip()
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
@@ -121,14 +120,21 @@ def mt4_webhook():
     parsed_json = None
     parse_error = None
     parse_error_detail = None
+    remaining_data = None
+
     try:
-        parsed_json = json.loads(cleaned_body)
+        # 使用 raw_decode 解析第一个 JSON 对象，并获取剩余部分
+        decoder = json.JSONDecoder()
+        parsed_json, idx = decoder.raw_decode(cleaned_body)
+        remaining = cleaned_body[idx:].strip()
+        if remaining:
+            remaining_data = remaining[:200]  # 记录前200字符用于调试
+            print(f"检测到JSON后剩余数据: {remaining_data}")
     except json.JSONDecodeError as e:
         parse_error = str(e)
         parse_error_detail = traceback.format_exc()
-        # 打印错误到控制台，便于在Railway日志中查看
         print(f"JSON解析错误: {e}")
-        print(f"原始body(前200字符): {cleaned_body[:200]}")
+        print(f"原始body(前500字符): {cleaned_body[:500]}")
     except Exception as e:
         parse_error = f"未知异常: {str(e)}"
         parse_error_detail = traceback.format_exc()
@@ -140,10 +146,11 @@ def mt4_webhook():
         'method': request.method,
         'path': request.path,
         'headers': headers_dict,
-        'body_raw': raw_body,  # 保存原始未strip的版本，以防需要
+        'body_raw': raw_body,
         'parsed': parsed_json,
         'parse_error': parse_error,
         'parse_error_detail': parse_error_detail,
+        'remaining_data': remaining_data,
         # 为快速展示提取部分字段（表格中用）
         'account': parsed_json.get('account') if parsed_json else None,
         'server': parsed_json.get('server') if parsed_json else None,
@@ -266,6 +273,12 @@ HTML_TEMPLATE = """
                             {% if latest.full_error %}
                             <pre class="mt-2 bg-light p-2 rounded" style="font-size:0.75rem;">{{ latest.full_error }}</pre>
                             {% endif %}
+                            {% if latest.remaining_data %}
+                            <div class="mt-2 alert alert-info">
+                                <strong>检测到额外数据（可能为多个JSON）：</strong>
+                                <pre class="mb-0" style="font-size:0.75rem;">{{ latest.remaining_data }}</pre>
+                            </div>
+                            {% endif %}
                         </div>
                     {% else %}
                         <div class="stat-grid">
@@ -328,6 +341,14 @@ HTML_TEMPLATE = """
                                     </table>
                                 </div>
                             </div>
+                        </div>
+                        {% endif %}
+
+                        <!-- 如果有剩余数据，提示 -->
+                        {% if latest.remaining_data %}
+                        <div class="mt-3 alert alert-info">
+                            <strong>检测到额外数据（可能为多个JSON）：</strong>
+                            <pre class="mb-0" style="font-size:0.75rem;">{{ latest.remaining_data }}</pre>
                         </div>
                         {% endif %}
 
