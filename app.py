@@ -2,12 +2,9 @@ import os
 import json
 import threading
 import traceback
-import time
-import random
-import string
-from datetime import datetime, time as dt_time
+from datetime import datetime
 from collections import deque
-from flask import Flask, request, render_template_string, redirect, url_for, jsonify
+from flask import Flask, request, render_template_string, redirect, url_for
 
 app = Flask(__name__)
 
@@ -20,91 +17,28 @@ commands = []
 commands_lock = threading.Lock()
 cmd_counter = 0
 
-# 暂停状态
-paused = False
-pause_lock = threading.Lock()
-
-# ==================== 时间限制函数 ====================
-def is_restricted_time():
-    """判断当前时间是否处于限制时段（0:30 - 4:30）"""
-    now = datetime.now()
-    hour = now.hour
-    minute = now.minute
-    # 0:30 到 4:30 包含边界
-    if hour == 0 and minute >= 30:
-        return True
-    if 1 <= hour <= 3:
-        return True
-    if hour == 4 and minute <= 30:
-        return True
-    return False
-
 # ==================== 工具函数 ====================
-def generate_nonce():
-    return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
-
 def format_command(cmd):
+    """将指令字典格式化为字符串，供MT4解析"""
     base = f"{cmd['direction']},{cmd['symbol']},{cmd['volume']}"
-    if cmd.get('sl') is not None and cmd.get('tp') is not None:
+    if cmd['sl'] is not None and cmd['tp'] is not None:
         return f"{base},{cmd['sl']},{cmd['tp']}"
-    elif cmd.get('sl') is not None:
+    elif cmd['sl'] is not None:
         return f"{base},{cmd['sl']},0"
-    elif cmd.get('tp') is not None:
+    elif cmd['tp'] is not None:
         return f"{base},0,{cmd['tp']}"
     else:
         return base
 
 def get_client_ip():
+    """尝试从请求头获取真实IP"""
     return request.headers.get('X-Real-Ip') or request.headers.get('X-Forwarded-For', request.remote_addr)
 
-def store_mt4_data(raw_body, client_ip, headers_dict):
-    cleaned_body = raw_body.strip()
-    parsed_json = None
-    parse_error = None
-    parse_error_detail = None
-    remaining_data = None
-
-    try:
-        decoder = json.JSONDecoder()
-        parsed_json, idx = decoder.raw_decode(cleaned_body)
-        remaining = cleaned_body[idx:].strip()
-        if remaining:
-            remaining_data = remaining[:200]
-            print(f"检测到JSON后剩余数据: {remaining_data}")
-    except json.JSONDecodeError as e:
-        parse_error = str(e)
-        parse_error_detail = traceback.format_exc()
-        print(f"JSON解析错误: {e}")
-        print(f"原始body(前500字符): {cleaned_body[:500]}")
-    except Exception as e:
-        parse_error = f"未知异常: {str(e)}"
-        parse_error_detail = traceback.format_exc()
-        print(f"解析时发生未知异常: {e}")
-
-    record = {
-        'received_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'ip': client_ip,
-        'method': request.method,
-        'path': request.path,
-        'headers': headers_dict,
-        'body_raw': raw_body,
-        'parsed': parsed_json,
-        'parse_error': parse_error,
-        'parse_error_detail': parse_error_detail,
-        'remaining_data': remaining_data,
-        'account': parsed_json.get('account') if parsed_json else None,
-        'server': parsed_json.get('server') if parsed_json else None,
-        'balance': parsed_json.get('balance') if parsed_json else None,
-        'equity': parsed_json.get('equity') if parsed_json else None,
-        'floating_pnl': parsed_json.get('floating_pnl') if parsed_json else None,
-    }
-
-    with history_lock:
-        history.appendleft(record)
-
-    return parsed_json, record
-
 def extract_latest_details(record):
+    """
+    从记录中提取详细字段，用于模板展示。
+    即使解析失败也返回一个包含错误信息的字典，确保模板总能拿到数据。
+    """
     if not record:
         return None
 
@@ -119,7 +53,7 @@ def extract_latest_details(record):
             **base_info,
             'error': f"JSON 解析失败: {record['parse_error']}",
             'full_error': record.get('parse_error_detail', ''),
-            'remaining_data': record.get('remaining_data')
+            'remaining_data': record.get('remaining_data')  # 如果有剩余数据，显示
         }
 
     parsed = record.get('parsed')
@@ -158,61 +92,77 @@ def extract_latest_details(record):
         'remaining_data': record.get('remaining_data')
     }
 
-# ==================== 暂停控制接口 ====================
-@app.route('/api/pause', methods=['POST'])
-def api_pause():
-    global paused
-    with pause_lock:
-        paused = True
-    return jsonify({'paused': paused})
-
-@app.route('/api/resume', methods=['POST'])
-def api_resume():
-    global paused
-    with pause_lock:
-        paused = False
-    return jsonify({'paused': paused})
-
-@app.route('/api/status', methods=['GET'])
-def api_status():
-    with pause_lock:
-        return jsonify({'paused': paused})
-
-# ==================== 路由：主页 ====================
+# ==================== 路由 ====================
 @app.route('/')
 def index():
     with history_lock:
-        hist_list = list(reversed(history))
+        hist_list = list(reversed(history))  # 最新的在前
         latest_record = hist_list[0] if hist_list else None
         latest_detail = extract_latest_details(latest_record)
     with commands_lock:
         cmds_copy = commands.copy()
-    with pause_lock:
-        current_paused = paused
-
-    # 判断是否处于限制时段
-    restricted = is_restricted_time()
-
     return render_template_string(
         HTML_TEMPLATE,
         history=hist_list,
         latest=latest_detail,
         latest_raw=latest_record,
         commands=cmds_copy,
-        MAX_HISTORY=MAX_HISTORY,
-        paused=current_paused,
-        restricted=restricted  # 传递限制标志
+        MAX_HISTORY=MAX_HISTORY
     )
 
-# ==================== 旧版 /web/api/echo 接口 ====================
 @app.route('/web/api/echo', methods=['POST'])
-def mt4_webhook_echo():
+def mt4_webhook():
     raw_body = request.get_data(as_text=True)
+    cleaned_body = raw_body.strip()
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
 
-    parsed_json, record = store_mt4_data(raw_body, client_ip, headers_dict)
+    parsed_json = None
+    parse_error = None
+    parse_error_detail = None
+    remaining_data = None
 
+    try:
+        # 使用 raw_decode 解析第一个 JSON 对象，并获取剩余部分
+        decoder = json.JSONDecoder()
+        parsed_json, idx = decoder.raw_decode(cleaned_body)
+        remaining = cleaned_body[idx:].strip()
+        if remaining:
+            remaining_data = remaining[:200]  # 记录前200字符用于调试
+            print(f"检测到JSON后剩余数据: {remaining_data}")
+    except json.JSONDecodeError as e:
+        parse_error = str(e)
+        parse_error_detail = traceback.format_exc()
+        print(f"JSON解析错误: {e}")
+        print(f"原始body(前500字符): {cleaned_body[:500]}")
+    except Exception as e:
+        parse_error = f"未知异常: {str(e)}"
+        parse_error_detail = traceback.format_exc()
+        print(f"解析时发生未知异常: {e}")
+
+    record = {
+        'received_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'ip': client_ip,
+        'method': request.method,
+        'path': request.path,
+        'headers': headers_dict,
+        'body_raw': raw_body,
+        'parsed': parsed_json,
+        'parse_error': parse_error,
+        'parse_error_detail': parse_error_detail,
+        'remaining_data': remaining_data,
+        # 为快速展示提取部分字段（表格中用）
+        'account': parsed_json.get('account') if parsed_json else None,
+        'server': parsed_json.get('server') if parsed_json else None,
+        'balance': parsed_json.get('balance') if parsed_json else None,
+        'equity': parsed_json.get('equity') if parsed_json else None,
+        'floating_pnl': parsed_json.get('floating_pnl') if parsed_json else None,
+    }
+
+    with history_lock:
+        history.appendleft(record)
+
+    # 准备响应指令
     response_lines = []
     with commands_lock:
         if commands:
@@ -225,159 +175,34 @@ def mt4_webhook_echo():
     else:
         return 'NOCOMMAND', 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
-# ==================== MT4 专用接口 ====================
-@app.route('/web/api/mt4/commands', methods=['POST'])
-def mt4_commands():
-    # 如果处于限制时段，返回空指令
-    if is_restricted_time():
-        return jsonify({'commands': [], 'paused': paused}), 200
-
-    raw_body = request.get_data(as_text=True)
-    client_ip = get_client_ip()
-    headers_dict = dict(request.headers)
-
-    parsed_json, record = store_mt4_data(raw_body, client_ip, headers_dict)
-
-    if parsed_json is None:
-        return jsonify({'error': 'Invalid JSON', 'commands': []}), 400
-
-    account = parsed_json.get('account')
-
-    with commands_lock:
-        account_commands = []
-        remaining_commands = []
-        for cmd in commands:
-            if cmd.get('account') is None or cmd.get('account') == account:
-                account_commands.append(cmd)
-            else:
-                remaining_commands.append(cmd)
-        commands[:] = remaining_commands
-
-    with pause_lock:
-        current_paused = paused
-
-    return jsonify({
-        'commands': account_commands,
-        'paused': current_paused
-    }), 200
-
-@app.route('/web/api/mt4/status', methods=['POST'])
-def mt4_status():
-    raw_body = request.get_data(as_text=True)
-    client_ip = get_client_ip()
-    headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
-    return 'OK', 200
-
-@app.route('/web/api/mt4/positions', methods=['POST'])
-def mt4_positions():
-    raw_body = request.get_data(as_text=True)
-    client_ip = get_client_ip()
-    headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
-    return 'OK', 200
-
-@app.route('/web/api/mt4/report', methods=['POST'])
-def mt4_report():
-    raw_body = request.get_data(as_text=True)
-    client_ip = get_client_ip()
-    headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
-    return 'OK', 200
-
-@app.route('/web/api/mt4/quote', methods=['POST'])
-def mt4_quote():
-    raw_body = request.get_data(as_text=True)
-    client_ip = get_client_ip()
-    headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
-    return 'OK', 200
-
-# ==================== 网页指令管理 ====================
 @app.route('/send_command', methods=['POST'])
 def send_command():
-    # 限制时段禁止发单
-    if is_restricted_time():
-        return redirect(url_for('index'))
-
     global cmd_counter
-    account = request.form.get('account', '').strip()
-    cmd_type = request.form.get('cmd_type', 'MARKET')
     symbol = request.form.get('symbol', '').strip().upper()
-    side = request.form.get('side', '').strip().upper()
+    direction = request.form.get('direction', '').strip().upper()
     volume = request.form.get('volume', '').strip()
-    price = request.form.get('price', '').strip()
     sl = request.form.get('sl', '').strip()
     tp = request.form.get('tp', '').strip()
-    ticket = request.form.get('ticket', '').strip()
-    lots = request.form.get('lots', '').strip()
 
-    # 基础校验
-    if cmd_type in ['MARKET', 'LIMIT']:
-        if not symbol or side not in ['BUY', 'SELL'] or not volume:
-            return redirect(url_for('index'))
-    elif cmd_type == 'CLOSE':
-        if not ticket:
-            return redirect(url_for('index'))
-    else:
+    if not symbol or direction not in ['BUY', 'SELL'] or not volume:
         return redirect(url_for('index'))
 
     try:
-        if cmd_type in ['MARKET', 'LIMIT']:
-            volume = float(volume)
-            sl = float(sl) if sl else None
-            tp = float(tp) if tp else None
-        if cmd_type == 'LIMIT':
-            price = float(price) if price else 0.0
-        if cmd_type == 'CLOSE':
-            ticket = int(ticket)
-            lots = float(lots) if lots else 0.0
+        volume = float(volume)
+        sl = float(sl) if sl else None
+        tp = float(tp) if tp else None
     except ValueError:
         return redirect(url_for('index'))
 
-    # 如果未提供账户，尝试从最新历史记录中获取
-    if not account:
-        with history_lock:
-            if history:
-                latest = history[0]
-                account = latest.get('account')
-        if not account:
-            account = 'default'
-
-    now = int(time.time())
     cmd = {
-        'id': str(cmd_counter),
-        'account': account,
-        'nonce': generate_nonce(),
-        'created_at': now,
-        'ttl_sec': 10,
+        'id': cmd_counter,
+        'symbol': symbol,
+        'direction': direction,
+        'volume': volume,
+        'sl': sl,
+        'tp': tp,
+        'timestamp': datetime.now().strftime('%H:%M:%S')
     }
-
-    if cmd_type == 'MARKET':
-        cmd['action'] = 'MARKET'
-        cmd['symbol'] = symbol
-        cmd['side'] = side
-        cmd['volume'] = volume
-        if sl is not None:
-            cmd['sl_price'] = sl
-        if tp is not None:
-            cmd['tp_price'] = tp
-    elif cmd_type == 'LIMIT':
-        cmd['action'] = 'LIMIT'
-        cmd['symbol'] = symbol
-        cmd['side'] = side
-        cmd['volume'] = volume
-        cmd['price'] = price
-        if sl is not None:
-            cmd['sl'] = sl
-        if tp is not None:
-            cmd['tp'] = tp
-    elif cmd_type == 'CLOSE':
-        cmd['action'] = 'CLOSE'
-        cmd['ticket'] = ticket
-        if lots > 0:
-            cmd['lots'] = lots
-
     with commands_lock:
         commands.append(cmd)
         cmd_counter += 1
@@ -397,7 +222,7 @@ def clear_commands():
         commands.clear()
     return redirect(url_for('index'))
 
-# ==================== HTML模板（增强版，含限制模式）====================
+# ==================== HTML模板 ====================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -418,97 +243,20 @@ HTML_TEMPLATE = """
         .badge-ip { font-family: monospace; background: #e9ecef; color: #000; padding: 3px 6px; border-radius: 4px; }
         .command-item { background: #e9ecef; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
         .info-box { background: #d1e7ff; border-radius: 8px; padding: 12px; margin-bottom: 15px; border-left: 5px solid #0a58ca; }
-        .pause-control { background: #f8d7da; border-left: 5px solid #dc3545; }
-
-        /* 限制模式样式 */
-        .restricted-mode {
-            background-color: black !important;
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            color: red;
-            font-size: 4rem;
-            font-weight: bold;
-            text-align: center;
-        }
-        .restricted-mode .status-box {
-            background: rgba(0,0,0,0.7);
-            border: 2px solid red;
-            border-radius: 10px;
-            padding: 20px;
-            margin-bottom: 20px;
-            color: white;
-            font-size: 1.5rem;
-        }
-        .restricted-mode .status-box .label {
-            color: #aaa;
-            font-size: 1rem;
-        }
-        .restricted-mode .status-box .value {
-            color: #0f0;
-        }
     </style>
 </head>
 <body>
-    {% if restricted %}
-    <!-- 限制模式显示 -->
-    <div class="restricted-mode">
-        <div class="status-box">
-            <div class="row">
-                <div class="col">
-                    <span class="label">账户</span><br>
-                    <span class="value">{{ latest.account if latest else 'N/A' }}</span>
-                </div>
-                <div class="col">
-                    <span class="label">余额</span><br>
-                    <span class="value">{{ "%.2f"|format(latest.balance) if latest and latest.balance is number else 'N/A' }}</span>
-                </div>
-                <div class="col">
-                    <span class="label">净值</span><br>
-                    <span class="value">{{ "%.2f"|format(latest.equity) if latest and latest.equity is number else 'N/A' }}</span>
-                </div>
-                <div class="col">
-                    <span class="label">浮动盈亏</span><br>
-                    <span class="value">{{ "%.2f"|format(latest.floating_pnl) if latest and latest.floating_pnl is number else 'N/A' }}</span>
-                </div>
-            </div>
-        </div>
-        <div>为人民服务</div>
-    </div>
-    {% else %}
-    <!-- 正常模式显示 -->
     <div class="container">
         <h1 class="mb-3"><i class="bi bi-cpu"></i> MT4 远程交易执行 · 专业监控</h1>
         
         <div class="info-box d-flex justify-content-between align-items-center">
             <div>
                 <i class="bi bi-info-circle-fill me-2"></i>
-                <strong>MT4专用接口：</strong> 
-                <code>/web/api/mt4/commands</code> (轮询), 
-                <code>/web/api/mt4/status</code> (状态), 
-                <code>/web/api/mt4/positions</code> (持仓)
+                <strong>MT4上报接口：</strong> <code>POST /web/api/echo</code> 
                 <span class="badge bg-secondary ms-2">等待指令返回</span>
-                <br><small class="text-muted">原 <code>/web/api/echo</code> 接口仍保留，用于调试</small>
+                <span class="ms-3"><i class="bi bi-arrow-return-right"></i> 响应格式：纯文本，每行一条指令，无指令返回 <code>NOCOMMAND</code></span>
             </div>
-            <span class="text-muted small">指令将按账户过滤后返回</span>
-        </div>
-
-        <!-- 暂停控制卡片 -->
-        <div class="card shadow-sm mb-3 pause-control">
-            <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
-                <span><i class="bi bi-pause-circle"></i> 应急暂停控制</span>
-            </div>
-            <div class="card-body">
-                <div class="d-flex align-items-center justify-content-between">
-                    <span>当前状态: <strong id="pause-status" class="{% if paused %}text-danger{% else %}text-success{% endif %}">{% if paused %}已暂停{% else %}运行中{% endif %}</strong></span>
-                    <div>
-                        <button id="pause-btn" class="btn btn-warning btn-sm me-2" {% if paused %}disabled{% endif %}><i class="bi bi-pause"></i> 暂停</button>
-                        <button id="resume-btn" class="btn btn-success btn-sm" {% if not paused %}disabled{% endif %}><i class="bi bi-play"></i> 恢复</button>
-                    </div>
-                </div>
-            </div>
+            <span class="text-muted small">队列指令将在下次上报时被取走</span>
         </div>
 
         <!-- 最新上报详细数据卡片 -->
@@ -683,19 +431,10 @@ HTML_TEMPLATE = """
                             {% for cmd in commands %}
                             <div class="command-item d-flex justify-content-between align-items-center">
                                 <div>
-                                    <strong>{{ cmd.action }}</strong>
-                                    {% if cmd.action == 'MARKET' %}
-                                        {{ cmd.side }} {{ cmd.symbol }} {{ cmd.volume }}手
-                                        {% if cmd.sl_price %} SL:{{ cmd.sl_price }}{% endif %}
-                                        {% if cmd.tp_price %} TP:{{ cmd.tp_price }}{% endif %}
-                                    {% elif cmd.action == 'LIMIT' %}
-                                        {{ cmd.side }} {{ cmd.symbol }} {{ cmd.volume }}手 @ {{ cmd.price }}
-                                        {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
-                                        {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
-                                    {% elif cmd.action == 'CLOSE' %}
-                                        平仓 票号:{{ cmd.ticket }}{% if cmd.lots %} 手数:{{ cmd.lots }}{% endif %}
-                                    {% endif %}
-                                    <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp if cmd.timestamp else '' }} | 账户: {{ cmd.account }} | ID: {{ cmd.id }}</small>
+                                    <strong>{{ cmd.direction }}</strong> {{ cmd.symbol }}  {{ cmd.volume }} 手
+                                    {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
+                                    {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
+                                    <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp }}</small>
                                 </div>
                                 <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
                                     <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')"><i class="bi bi-x"></i></button>
@@ -708,75 +447,37 @@ HTML_TEMPLATE = """
                     </div>
                 </div>
 
-                <!-- 增强版发单表单 -->
                 <div class="card shadow-sm">
                     <div class="card-header bg-warning">
                         <i class="bi bi-pencil-square"></i> 下达新交易指令
                     </div>
                     <div class="card-body">
-                        <form method="post" action="{{ url_for('send_command') }}" id="commandForm">
+                        <form method="post" action="{{ url_for('send_command') }}">
                             <div class="mb-2">
-                                <label class="form-label">账户 <span class="text-muted">(可选，将自动保存)</span></label>
-                                <input type="text" name="account" class="form-control form-control-sm" placeholder="833711" id="accountInput">
+                                <label class="form-label">品种 <span class="text-muted">(如 EURUSD)</span></label>
+                                <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD" required>
                             </div>
                             <div class="mb-2">
-                                <label class="form-label">指令类型</label>
-                                <select name="cmd_type" class="form-select form-select-sm" id="cmdTypeSelect" required>
-                                    <option value="MARKET" selected>市价单 (MARKET)</option>
-                                    <option value="LIMIT">限价单 (LIMIT)</option>
-                                    <option value="CLOSE">平仓 (CLOSE)</option>
+                                <label class="form-label">方向</label>
+                                <select name="direction" class="form-select form-select-sm" required>
+                                    <option value="BUY">买入 (BUY)</option>
+                                    <option value="SELL">卖出 (SELL)</option>
                                 </select>
                             </div>
-
-                            <!-- 市价/限价通用字段 -->
-                            <div id="tradeFields">
-                                <div class="mb-2">
-                                    <label class="form-label">品种 <span class="text-muted">(如 EURUSD)</span></label>
-                                    <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD">
+                            <div class="mb-2">
+                                <label class="form-label">手数</label>
+                                <input type="number" step="0.01" min="0.01" name="volume" class="form-control form-control-sm" value="0.1" required>
+                            </div>
+                            <div class="row">
+                                <div class="col mb-2">
+                                    <label class="form-label">止损 (SL)</label>
+                                    <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="可选">
                                 </div>
-                                <div class="mb-2">
-                                    <label class="form-label">方向</label>
-                                    <select name="side" class="form-select form-select-sm">
-                                        <option value="BUY">买入 (BUY)</option>
-                                        <option value="SELL">卖出 (SELL)</option>
-                                    </select>
-                                </div>
-                                <div class="mb-2">
-                                    <label class="form-label">手数</label>
-                                    <input type="number" step="0.01" min="0.01" name="volume" class="form-control form-control-sm" value="0.1">
-                                </div>
-                                <div class="row">
-                                    <div class="col mb-2">
-                                        <label class="form-label">止损 (SL)</label>
-                                        <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="可选">
-                                    </div>
-                                    <div class="col mb-2">
-                                        <label class="form-label">止盈 (TP)</label>
-                                        <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="可选">
-                                    </div>
+                                <div class="col mb-2">
+                                    <label class="form-label">止盈 (TP)</label>
+                                    <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="可选">
                                 </div>
                             </div>
-
-                            <!-- 限价单专用字段 -->
-                            <div id="limitFields" style="display: none;">
-                                <div class="mb-2">
-                                    <label class="form-label">限价价格</label>
-                                    <input type="number" step="0.00001" name="price" class="form-control form-control-sm" placeholder="如 1.1050">
-                                </div>
-                            </div>
-
-                            <!-- 平仓专用字段 -->
-                            <div id="closeFields" style="display: none;">
-                                <div class="mb-2">
-                                    <label class="form-label">订单号 (ticket)</label>
-                                    <input type="number" name="ticket" class="form-control form-control-sm" placeholder="如 12345678">
-                                </div>
-                                <div class="mb-2">
-                                    <label class="form-label">手数 <span class="text-muted">(可选，留空则全部平仓)</span></label>
-                                    <input type="number" step="0.01" min="0.01" name="lots" class="form-control form-control-sm" placeholder="可选">
-                                </div>
-                            </div>
-
                             <button type="submit" class="btn btn-primary w-100 mt-2"><i class="bi bi-send"></i> 加入指令队列</button>
                         </form>
                     </div>
@@ -784,83 +485,8 @@ HTML_TEMPLATE = """
             </div>
         </div>
     </div>
-    {% endif %}
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // 账户本地存储
-        document.addEventListener('DOMContentLoaded', function() {
-            const savedAccount = localStorage.getItem('mt4_default_account');
-            if (savedAccount) {
-                document.getElementById('accountInput').value = savedAccount;
-            }
-        });
-
-        document.getElementById('commandForm')?.addEventListener('submit', function() {
-            const accountInput = document.getElementById('accountInput').value;
-            if (accountInput) {
-                localStorage.setItem('mt4_default_account', accountInput);
-            }
-        });
-
-        // 暂停控制
-        function updatePauseStatus() {
-            fetch('/api/status')
-                .then(response => response.json())
-                .then(data => {
-                    const statusEl = document.getElementById('pause-status');
-                    const pauseBtn = document.getElementById('pause-btn');
-                    const resumeBtn = document.getElementById('resume-btn');
-                    if (data.paused) {
-                        statusEl.innerText = '已暂停';
-                        statusEl.className = 'text-danger';
-                        pauseBtn.disabled = true;
-                        resumeBtn.disabled = false;
-                    } else {
-                        statusEl.innerText = '运行中';
-                        statusEl.className = 'text-success';
-                        pauseBtn.disabled = false;
-                        resumeBtn.disabled = true;
-                    }
-                });
-        }
-
-        document.getElementById('pause-btn')?.addEventListener('click', function() {
-            fetch('/api/pause', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => updatePauseStatus());
-        });
-
-        document.getElementById('resume-btn')?.addEventListener('click', function() {
-            fetch('/api/resume', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => updatePauseStatus());
-        });
-
-        setInterval(updatePauseStatus, 5000);
-        updatePauseStatus();
-
-        // 指令类型切换
-        const cmdTypeSelect = document.getElementById('cmdTypeSelect');
-        const tradeFields = document.getElementById('tradeFields');
-        const limitFields = document.getElementById('limitFields');
-        const closeFields = document.getElementById('closeFields');
-
-        function toggleFields() {
-            const type = cmdTypeSelect.value;
-            tradeFields.style.display = (type === 'MARKET' || type === 'LIMIT') ? 'block' : 'none';
-            limitFields.style.display = (type === 'LIMIT') ? 'block' : 'none';
-            closeFields.style.display = (type === 'CLOSE') ? 'block' : 'none';
-
-            document.querySelector('[name="symbol"]').required = (type === 'MARKET' || type === 'LIMIT');
-            document.querySelector('[name="side"]').required = (type === 'MARKET' || type === 'LIMIT');
-            document.querySelector('[name="volume"]').required = (type === 'MARKET' || type === 'LIMIT');
-            document.querySelector('[name="ticket"]').required = (type === 'CLOSE');
-        }
-
-        cmdTypeSelect.addEventListener('change', toggleFields);
-        toggleFields();
-    </script>
 </body>
 </html>
 """
