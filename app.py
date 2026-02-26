@@ -368,7 +368,7 @@ def send_command():
     if cmd_type == 'MARKET':
         cmd['action'] = 'market'
         cmd['symbol'] = symbol
-        cmd['side'] = side.lower()
+        cmd['side'] = side.lower()   # 统一转为小写
         cmd['volume'] = volume
         if sl is not None:
             cmd['sl_price'] = sl
