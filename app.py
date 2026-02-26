@@ -245,11 +245,15 @@ def mt4_commands():
         account_commands = []
         remaining_commands = []
         for cmd in commands:
+            # 如果命令没有 account 字段（即 cmd.get('account') is None），或账户匹配，则取出
             if cmd.get('account') is None or cmd.get('account') == account:
                 account_commands.append(cmd)
             else:
                 remaining_commands.append(cmd)
         commands[:] = remaining_commands
+
+    # 调试打印：观察下发给 EA 的命令
+    print("SEND CMDS:", json.dumps(account_commands, ensure_ascii=False))
 
     with pause_lock:
         current_paused = paused
@@ -347,28 +351,34 @@ def send_command():
         print("拒绝发单：数值转换失败")
         return redirect(url_for('index'))
 
-    # 账户处理：如果未提供，尝试从历史记录获取；若仍无，设为空字符串
+    # ===== 修复：账户处理，避免空字符串 =====
     if not account:
         with history_lock:
             if history:
                 latest = history[0]
                 account = latest.get('account')
+        # 如果仍然没有，设为 None（即不加入 account 字段）
         if not account:
-            account = ""
+            account = None
+    else:
+        account = account.strip()
 
     now = int(time.time())
+    # 基础命令结构（不包含 account）
     cmd = {
         'id': str(cmd_counter),
-        'account': account,
         'nonce': generate_nonce(),
         'created_at': now,
         'ttl_sec': 10,
     }
+    # 只有 account 存在时才加入
+    if account:
+        cmd['account'] = account
 
     if cmd_type == 'MARKET':
         cmd['action'] = 'market'
         cmd['symbol'] = symbol
-        cmd['side'] = side.lower()   # 统一转为小写
+        cmd['side'] = side.lower()
         cmd['volume'] = volume
         if sl is not None:
             cmd['sl_price'] = sl
@@ -390,6 +400,9 @@ def send_command():
         if lots > 0:
             cmd['lots'] = lots
 
+    # 调试打印：观察加入队列的命令
+    print("ADD CMD:", json.dumps(cmd, ensure_ascii=False))
+
     with commands_lock:
         commands.append(cmd)
         cmd_counter += 1
@@ -409,7 +422,7 @@ def clear_commands():
         commands.clear()
     return redirect(url_for('index'))
 
-# ==================== HTML模板（完整版）====================
+# ==================== HTML模板（与之前完全相同）====================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -707,7 +720,7 @@ HTML_TEMPLATE = """
                                     {% elif cmd.action == 'close' %}
                                         平仓 票号:{{ cmd.ticket }}{% if cmd.lots %} 手数:{{ cmd.lots }}{% endif %}
                                     {% endif %}
-                                    <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp if cmd.timestamp else '' }} | 账户: {{ cmd.account }} | ID: {{ cmd.id }}</small>
+                                    <br><small class="text-muted"><i class="bi bi-clock"></i> {{ cmd.timestamp if cmd.timestamp else '' }} | 账户: {{ cmd.account if cmd.account else '无' }} | ID: {{ cmd.id }}</small>
                                 </div>
                                 <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
                                     <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')"><i class="bi bi-x"></i></button>
