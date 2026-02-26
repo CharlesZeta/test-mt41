@@ -1,10 +1,10 @@
 import os
 import json
 import threading
-import traceback
 import time
 import random
 import string
+import traceback
 from datetime import datetime
 from collections import deque, defaultdict
 from flask import Flask, request, render_template_string, redirect, url_for, jsonify
@@ -17,11 +17,11 @@ history = deque(maxlen=MAX_HISTORY)
 history_lock = threading.Lock()
 
 # 按账号分队列：commands_by_account["833711"] -> deque([...])
-# 特殊 key: "*" 表示广播队列（任何账号都可以取到）
+# "*" 为广播队列（任何账号可取）
 commands_by_account = defaultdict(lambda: deque(maxlen=500))
 commands_lock = threading.Lock()
 
-# 记录最近一次 MT4 轮询（commands）上来的账号，按 IP 记
+# 最近一次 MT4 轮询上报的账号（按 IP 记），用于网页端默认账号
 last_account_by_ip = {}
 last_account_lock = threading.Lock()
 
@@ -46,15 +46,15 @@ def is_restricted_time():
 def generate_nonce(k=16):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=k))
 
-def now_ts():
-    return int(time.time())
-
 def mk_cmd_id():
-    # 避免重启重复：毫秒时间戳 + nonce
+    # 毫秒时间戳 + 随机，避免重启重复
     return f"{int(time.time()*1000)}_{generate_nonce(8)}"
 
 def norm_str(x):
     return (x or "").strip()
+
+def norm_symbol(x):
+    return norm_str(x).upper()
 
 def norm_side(x):
     s = norm_str(x).lower()
@@ -66,14 +66,11 @@ def norm_side(x):
         return "sell"
     return ""
 
-def norm_symbol(x):
-    return norm_str(x).upper()
-
 def get_client_ip():
     return request.headers.get('X-Real-Ip') or request.headers.get('X-Forwarded-For', request.remote_addr)
 
 def safe_json_load(raw_text: str):
-    """更稳健的 JSON 解析：允许 body 前后空白；若多 JSON 拼接，只取第一个并记录剩余"""
+    """只解析第一个 JSON，对多余残留做记录"""
     cleaned = (raw_text or "").strip()
     if not cleaned:
         return None, "empty_body", None
@@ -111,11 +108,12 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
 
 def validate_cmd(cmd: dict):
     """
-    校验命令完整性：
-    - market/limit 必须有 symbol、side buy/sell、volume>0
-    - close 必须有 ticket
+    强校验（核心）：
+    - market/limit：必须 symbol 非空、side=buy/sell、volume>0
+    - close：ticket>0
+    - quote：symbols 非空 list
     """
-    action = (cmd.get("action") or "").lower().strip()
+    action = (cmd.get("action") or "").strip().lower()
 
     if action in ("market", "limit"):
         sym = norm_str(cmd.get("symbol"))
@@ -133,14 +131,14 @@ def validate_cmd(cmd: dict):
         if not vol_ok:
             return False, "invalid_volume"
 
-        # 统一 side 写回（确保下发就是 buy/sell）
+        # 写回规范 side，确保下发给 EA 就是 buy/sell
         cmd["side"] = side
         return True, "ok"
 
     if action == "close":
         ticket = cmd.get("ticket")
         try:
-            return (int(ticket) > 0), "ok" if int(ticket) > 0 else "missing_ticket"
+            return (int(ticket) > 0), ("ok" if int(ticket) > 0 else "missing_ticket")
         except Exception:
             return False, "missing_ticket"
 
@@ -154,21 +152,26 @@ def validate_cmd(cmd: dict):
 
 def enqueue_cmd(cmd: dict):
     """
-    入队：按 account 分队列
-    - cmd["account"] 缺失 => 广播队列 "*"
+    入队：按 account 分队列；无 account -> 广播队列 "*"
     """
-    acct = cmd.get("account")
-    acct = norm_str(acct)
+    acct = norm_str(cmd.get("account"))
     key = acct if acct else "*"
     with commands_lock:
         commands_by_account[key].append(cmd)
 
+def snapshot_all_queues():
+    """仅用于调试日志：把每个队列内容导出"""
+    with commands_lock:
+        snap = {k: list(v) for k, v in commands_by_account.items() if len(v) > 0}
+    return snap
+
 def dequeue_cmds_for_account(account: str, max_n=50):
     """
-    出队：先取该 account 队列，再取广播队列
+    出队：先专属队列，再广播队列
     """
     acct = norm_str(account)
     out = []
+
     with commands_lock:
         # 专属队列
         if acct and acct in commands_by_account:
@@ -208,21 +211,21 @@ def api_status():
 def index():
     with history_lock:
         hist_list = list(reversed(history))
-        latest_record = hist_list[0] if hist_list else None
-
-    # 展示队列（汇总）
-    with commands_lock:
-        q_summary = {k: len(v) for k, v in commands_by_account.items() if len(v) > 0}
+        latest = hist_list[0] if hist_list else None
 
     with pause_lock:
         current_paused = paused
 
     restricted = is_restricted_time()
 
+    # 队列概览
+    with commands_lock:
+        q_summary = {k: len(v) for k, v in commands_by_account.items() if len(v) > 0}
+
     return render_template_string(
         HTML_TEMPLATE,
         history=hist_list,
-        latest=latest_record,
+        latest=latest,
         paused=current_paused,
         restricted=restricted,
         q_summary=q_summary
@@ -238,6 +241,7 @@ def mt4_commands():
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
+
     parsed_json, _ = store_mt4_data(raw_body, client_ip, headers_dict)
 
     if not isinstance(parsed_json, dict):
@@ -245,15 +249,18 @@ def mt4_commands():
 
     account = norm_str(parsed_json.get('account'))
 
-    # 记录该 IP 最近轮询账号，供网页默认账号用
+    # 记录该 IP 最近轮询账号（网页端默认账号用）
     if account:
         with last_account_lock:
             last_account_by_ip[client_ip] = account
 
+    # ==== DEBUG：轮询时打印全队列快照（定位污染源）====
+    print("QUEUE BEFORE:", json.dumps(snapshot_all_queues(), ensure_ascii=False))
+
     # 出队
     cmds = dequeue_cmds_for_account(account, max_n=50)
 
-    # 下发前再做一遍强校验，防止队列被污染
+    # 下发前强制过滤脏命令（关键止血）
     valid_cmds = []
     rejected = []
     for c in cmds:
@@ -263,9 +270,11 @@ def mt4_commands():
         else:
             rejected.append({**c, "_reject": reason})
 
+    print("SEND CMDS RAW:", json.dumps(valid_cmds, ensure_ascii=False))
     if rejected:
         print("REJECTED:", json.dumps(rejected, ensure_ascii=False))
-    print("SEND CMDS:", json.dumps(valid_cmds, ensure_ascii=False))
+
+    print("QUEUE AFTER :", json.dumps(snapshot_all_queues(), ensure_ascii=False))
 
     with pause_lock:
         current_paused = paused
@@ -322,17 +331,15 @@ def send_command():
         with last_account_lock:
             account = last_account_by_ip.get(client_ip, "")
 
-    # 基础校验 + 类型转换
+    # 参数解析 + 强校验
     try:
         if cmd_type in ('MARKET', 'LIMIT'):
             if not symbol:
                 print("拒绝发单：symbol 为空")
                 return redirect(url_for('index'))
-
             if side_ui not in ('BUY', 'SELL'):
                 print("拒绝发单：side 无效", side_ui)
                 return redirect(url_for('index'))
-
             if not volume_raw:
                 print("拒绝发单：volume 为空")
                 return redirect(url_for('index'))
@@ -366,11 +373,11 @@ def send_command():
         print("拒绝发单：参数解析失败", e)
         return redirect(url_for('index'))
 
-    # 构造命令（注意：account 只有非空才写入）
+    # 构造命令：account 只有非空才写入（避免 null/空串污染）
     cmd = {
         "id": mk_cmd_id(),
         "nonce": generate_nonce(),
-        "created_at": now_ts(),
+        "created_at": int(time.time()),
         "ttl_sec": 10,
     }
     if account:
@@ -403,7 +410,7 @@ def send_command():
         if lots > 0:
             cmd["lots"] = lots
 
-    # 入队前强校验：确保不会产生空字段命令
+    # 入队前再 validate（最后保险）
     ok, reason = validate_cmd(cmd)
     if not ok:
         print("拒绝入队：命令非法", reason, json.dumps(cmd, ensure_ascii=False))
@@ -419,7 +426,7 @@ def clear_commands():
         commands_by_account.clear()
     return redirect(url_for('index'))
 
-# ==================== HTML（精简版）====================
+# ==================== HTML（轻量版）====================
 HTML_TEMPLATE = """
 <!doctype html>
 <html>
@@ -430,96 +437,102 @@ HTML_TEMPLATE = """
     body { font-family: Arial; margin: 20px; }
     .box { border: 1px solid #ddd; padding: 12px; margin-bottom: 14px; border-radius: 8px; }
     .muted { color: #666; font-size: 12px; }
-    input, select { padding: 6px; margin: 4px 0; width: 240px; }
+    input, select { padding: 6px; margin: 4px 0; width: 260px; }
     button { padding: 8px 12px; }
     code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
   </style>
 </head>
 <body>
-{% if restricted %}
-  <h1 style="color:red">限制时段（0:30-4:30）</h1>
-{% endif %}
-
-<div class="box">
-  <h3>队列概览</h3>
-  <div class="muted">按账号分队列，"*" 为广播队列（任何账号都能取）。</div>
-  <pre>{{ q_summary }}</pre>
-  <form method="post" action="{{ url_for('clear_commands') }}">
-    <button type="submit" onclick="return confirm('清空全部队列？')">清空队列</button>
-  </form>
-</div>
-
-<div class="box">
-  <h3>下达指令</h3>
-  <form method="post" action="{{ url_for('send_command') }}">
-    <div>
-      <label>账户（可空，自动用最近 MT4 轮询账号）</label><br/>
-      <input name="account" placeholder="833711"/>
-    </div>
-    <div>
-      <label>类型</label><br/>
-      <select name="cmd_type">
-        <option value="MARKET">MARKET</option>
-        <option value="LIMIT">LIMIT</option>
-        <option value="CLOSE">CLOSE</option>
-      </select>
-    </div>
-    <div>
-      <label>品种</label><br/>
-      <input name="symbol" placeholder="EURUSD"/>
-    </div>
-    <div>
-      <label>方向</label><br/>
-      <select name="side">
-        <option value="BUY">BUY</option>
-        <option value="SELL">SELL</option>
-      </select>
-    </div>
-    <div>
-      <label>手数</label><br/>
-      <input name="volume" value="0.1"/>
-    </div>
-    <div>
-      <label>限价价格（LIMIT 用）</label><br/>
-      <input name="price" placeholder="1.10000"/>
-    </div>
-    <div>
-      <label>止损 SL（可选）</label><br/>
-      <input name="sl" placeholder="可选"/>
-    </div>
-    <div>
-      <label>止盈 TP（可选）</label><br/>
-      <input name="tp" placeholder="可选"/>
-    </div>
-    <div>
-      <label>ticket（CLOSE 用）</label><br/>
-      <input name="ticket" placeholder="12345678"/>
-    </div>
-    <div>
-      <label>lots（CLOSE 可选）</label><br/>
-      <input name="lots" placeholder="0.1"/>
-    </div>
-    <button type="submit">加入队列</button>
-  </form>
-</div>
-
-<div class="box">
-  <h3>最近上报（history, {{ history|length }}/50）</h3>
-  {% if latest %}
-    <div class="muted">最新路径：{{ latest.path }} | IP: {{ latest.ip }} | time: {{ latest.received_at }}</div>
-    <pre style="white-space:pre-wrap">{{ latest.body_raw[:800] }}</pre>
-  {% else %}
-    <div class="muted">暂无数据</div>
+  {% if restricted %}
+    <h2 style="color:red">限制时段（0:30-4:30），MT4 将收不到指令</h2>
   {% endif %}
-</div>
 
-<div class="box">
-  <h3>MT4 接口</h3>
-  <div><code>/web/api/mt4/commands</code> 轮询</div>
-  <div><code>/web/api/mt4/status</code> 状态</div>
-  <div><code>/web/api/mt4/positions</code> 持仓</div>
-  <div><code>/web/api/mt4/report</code> 回报</div>
-</div>
+  <div class="box">
+    <h3>队列概览</h3>
+    <div class="muted">按账号分队列，"*" 为广播队列（任何账号都能取）。</div>
+    <pre>{{ q_summary }}</pre>
+    <form method="post" action="{{ url_for('clear_commands') }}">
+      <button type="submit" onclick="return confirm('清空全部队列？')">清空队列</button>
+    </form>
+  </div>
+
+  <div class="box">
+    <h3>下达指令</h3>
+    <form method="post" action="{{ url_for('send_command') }}">
+      <div>
+        <label>账户（可空：自动用最近 MT4 轮询账号）</label><br/>
+        <input name="account" placeholder="833711"/>
+      </div>
+      <div>
+        <label>类型</label><br/>
+        <select name="cmd_type">
+          <option value="MARKET">MARKET</option>
+          <option value="LIMIT">LIMIT</option>
+          <option value="CLOSE">CLOSE</option>
+        </select>
+      </div>
+      <div>
+        <label>品种</label><br/>
+        <input name="symbol" placeholder="EURUSD"/>
+      </div>
+      <div>
+        <label>方向</label><br/>
+        <select name="side">
+          <option value="BUY">BUY</option>
+          <option value="SELL">SELL</option>
+        </select>
+      </div>
+      <div>
+        <label>手数</label><br/>
+        <input name="volume" value="0.1"/>
+      </div>
+      <div>
+        <label>限价价格（LIMIT 用）</label><br/>
+        <input name="price" placeholder="1.10000"/>
+      </div>
+      <div>
+        <label>止损 SL（可选）</label><br/>
+        <input name="sl" placeholder="可选"/>
+      </div>
+      <div>
+        <label>止盈 TP（可选）</label><br/>
+        <input name="tp" placeholder="可选"/>
+      </div>
+      <div>
+        <label>ticket（CLOSE 用）</label><br/>
+        <input name="ticket" placeholder="12345678"/>
+      </div>
+      <div>
+        <label>lots（CLOSE 可选）</label><br/>
+        <input name="lots" placeholder="0.1"/>
+      </div>
+      <button type="submit">加入队列</button>
+    </form>
+  </div>
+
+  <div class="box">
+    <h3>最近上报（{{ history|length }}/50）</h3>
+    {% if latest %}
+      <div class="muted">最新 path: {{ latest.path }} | IP: {{ latest.ip }} | time: {{ latest.received_at }}</div>
+      <pre style="white-space:pre-wrap">{{ latest.body_raw[:1000] }}</pre>
+      {% if latest.parse_error %}
+        <div style="color:red">parse_error: {{ latest.parse_error }}</div>
+      {% endif %}
+      {% if latest.remaining_data %}
+        <div style="color:orange">remaining_data: {{ latest.remaining_data }}</div>
+      {% endif %}
+    {% else %}
+      <div class="muted">暂无数据</div>
+    {% endif %}
+  </div>
+
+  <div class="box">
+    <h3>MT4 接口</h3>
+    <div><code>/web/api/mt4/commands</code> 轮询</div>
+    <div><code>/web/api/mt4/status</code> 状态</div>
+    <div><code>/web/api/mt4/positions</code> 持仓</div>
+    <div><code>/web/api/mt4/report</code> 回报</div>
+  </div>
 </body>
 </html>
 """
