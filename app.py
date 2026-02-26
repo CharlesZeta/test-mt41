@@ -13,8 +13,14 @@ app = Flask(__name__)
 
 # ==================== 全局数据结构 ====================
 MAX_HISTORY = 50
+
+# 主历史：只存“有效上报”(status/positions/report/quote)
 history = deque(maxlen=MAX_HISTORY)
 history_lock = threading.Lock()
+
+# 轮询历史：只存“commands轮询请求”(可选展示/排查)
+poll_history = deque(maxlen=MAX_HISTORY)
+poll_history_lock = threading.Lock()
 
 commands = []
 commands_lock = threading.Lock()
@@ -23,6 +29,7 @@ cmd_counter = 0
 # 暂停状态
 paused = False
 pause_lock = threading.Lock()
+
 
 # ==================== 时间限制函数 ====================
 def is_restricted_time():
@@ -37,6 +44,7 @@ def is_restricted_time():
     if hour == 4 and minute <= 30:
         return True
     return False
+
 
 # ==================== 工具函数 ====================
 def generate_nonce():
@@ -57,48 +65,57 @@ def format_command(cmd):
 def get_client_ip():
     return request.headers.get('X-Real-Ip') or request.headers.get('X-Forwarded-For', request.remote_addr)
 
-def store_mt4_data(raw_body, client_ip, headers_dict):
-    """
-    记录所有接口请求（含 /mt4/commands 的轮询 body），
-    但首页展示“最新账户状态”时会只挑 /mt4/status 的最新一条。
-    """
+def _safe_json_parse(raw_body: str):
     cleaned_body = (raw_body or "").strip()
+    if not cleaned_body:
+        return None, "empty_body", None, None
+
     parsed_json = None
     parse_error = None
     parse_error_detail = None
     remaining_data = None
 
     try:
-        # 尝试解析第一个 JSON（如果 body 里有多段，也能识别剩余）
         decoder = json.JSONDecoder()
-        parsed_json, idx = decoder.raw_decode(cleaned_body) if cleaned_body else (None, 0)
-        remaining = cleaned_body[idx:].strip() if cleaned_body else ""
+        parsed_json, idx = decoder.raw_decode(cleaned_body)
+        remaining = cleaned_body[idx:].strip()
         if remaining:
             remaining_data = remaining[:200]
-            print(f"检测到JSON后剩余数据: {remaining_data}")
+            print(f"[WARN] 检测到JSON后剩余数据(前200): {remaining_data}")
     except json.JSONDecodeError as e:
         parse_error = str(e)
         parse_error_detail = traceback.format_exc()
-        print(f"JSON解析错误: {e}")
-        print(f"原始body(前500字符): {cleaned_body[:500]}")
+        print(f"[ERROR] JSON解析错误: {e}")
+        print(f"[ERROR] 原始body(前500): {cleaned_body[:500]}")
     except Exception as e:
         parse_error = f"未知异常: {str(e)}"
         parse_error_detail = traceback.format_exc()
-        print(f"解析时发生未知异常: {e}")
+        print(f"[ERROR] 解析时发生未知异常: {e}")
+
+    return parsed_json, parse_error, parse_error_detail, remaining_data
+
+def store_mt4_data(raw_body, client_ip, headers_dict, category: str):
+    """
+    category:
+      - 'poll' : /mt4/commands 轮询请求
+      - 'status'/'positions'/'report'/'quote' : 有效上报
+      - 'echo' : 旧接口调试
+    """
+    parsed_json, parse_error, parse_error_detail, remaining_data = _safe_json_parse(raw_body)
 
     record = {
         'received_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'ip': client_ip,
         'method': request.method,
         'path': request.path,
+        'category': category,
         'headers': headers_dict,
         'body_raw': raw_body,
         'parsed': parsed_json,
         'parse_error': parse_error,
         'parse_error_detail': parse_error_detail,
         'remaining_data': remaining_data,
-
-        # 便于表格快速展示
+        # 常用字段（有就填，没有就 None）
         'account': parsed_json.get('account') if isinstance(parsed_json, dict) else None,
         'server': parsed_json.get('server') if isinstance(parsed_json, dict) else None,
         'balance': parsed_json.get('balance') if isinstance(parsed_json, dict) else None,
@@ -106,22 +123,24 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
         'floating_pnl': parsed_json.get('floating_pnl') if isinstance(parsed_json, dict) else None,
     }
 
-    with history_lock:
-        history.appendleft(record)  # 最新在左侧
+    # 分类入库：轮询请求不进主 history，避免“空值污染”
+    if category == "poll":
+        with poll_history_lock:
+            poll_history.appendleft(record)
+    else:
+        with history_lock:
+            history.appendleft(record)
 
     return parsed_json, record
 
 def extract_latest_details(record):
-    """
-    将 MT4 status JSON 完整字段映射出来。
-    注意：这里假设 record 来自 /web/api/mt4/status（我们在 index 里会过滤）。
-    """
     if not record:
         return None
 
     base_info = {
         'received_at': record.get('received_at'),
         'ip': record.get('ip'),
+        'category': record.get('category'),
         'body_raw_preview': (record.get('body_raw', '')[:500] + ('...' if len(record.get('body_raw', '')) > 500 else ''))
     }
 
@@ -137,9 +156,8 @@ def extract_latest_details(record):
     if not isinstance(parsed, dict):
         return {**base_info, 'error': 'JSON 解析失败或不是对象'}
 
-    metrics = parsed.get('metrics') or {}
+    metrics = parsed.get('metrics', {}) if isinstance(parsed.get('metrics', {}), dict) else {}
 
-    # positions 只有 /positions 才会有，这里保留兼容展示（即使 status 没发，也不会出错）
     positions = parsed.get('positions', [])
     if isinstance(positions, list):
         for pos in positions:
@@ -151,10 +169,9 @@ def extract_latest_details(record):
             elif isinstance(pos, dict):
                 pos['open_time_str'] = 'N/A'
 
-    # ✅ 全字段映射（按你给的 MT4 status JSON）
+    # 把你 EA status 里给到的字段尽量都映射出来（没有就 None）
     return {
         **base_info,
-
         'account': parsed.get('account'),
         'server': parsed.get('server'),
         'ts': parsed.get('ts'),
@@ -175,18 +192,18 @@ def extract_latest_details(record):
         'leverage_used': parsed.get('leverage_used'),
         'risk_flags': parsed.get('risk_flags'),
 
-        # metrics 展开给前端用（你页面现在就是这种平铺字段展示最稳）
-        'poll_latency_ms': metrics.get('poll_latency_ms'),
-        'last_http_code': metrics.get('last_http_code'),
-        'last_error': metrics.get('last_error'),
-        'queue_batch_size': metrics.get('queue_batch_size'),
-        'reports_sent_count': metrics.get('reports_sent_count'),
-        'executed_commands': metrics.get('executed_commands'),
-        'failed_commands': metrics.get('failed_commands'),
+        'metrics_poll_latency_ms': metrics.get('poll_latency_ms'),
+        'metrics_last_http_code': metrics.get('last_http_code'),
+        'metrics_last_error': metrics.get('last_error'),
+        'metrics_queue_batch_size': metrics.get('queue_batch_size'),
+        'metrics_reports_sent_count': metrics.get('reports_sent_count'),
+        'metrics_executed_commands': metrics.get('executed_commands'),
+        'metrics_failed_commands': metrics.get('failed_commands'),
 
-        'positions': positions,
+        'positions': positions if isinstance(positions, list) else [],
         'remaining_data': record.get('remaining_data')
     }
+
 
 # ==================== 暂停控制接口 ====================
 @app.route('/api/pause', methods=['POST'])
@@ -208,16 +225,19 @@ def api_status():
     with pause_lock:
         return jsonify({'paused': paused})
 
+
 # ==================== 路由：主页 ====================
 @app.route('/')
 def index():
+    # 最新记录：直接取 history[0]（因为 appendleft）
     with history_lock:
-        # ✅ 不要 reversed：appendleft 已经保证最新在最前
-        hist_list = list(history)
+        latest_record = history[0] if history else None
+        latest_detail = extract_latest_details(latest_record)
+        # 表格展示：给你一份“倒序(旧->新)”更好看；但 latest 不再用它
+        history_list_for_table = list(reversed(history))
 
-        # ✅ B方案：最新账户状态严格取 /web/api/mt4/status 的最新一条
-        latest_status_record = next((r for r in hist_list if r.get("path") == "/web/api/mt4/status"), None)
-        latest_detail = extract_latest_details(latest_status_record) if latest_status_record else None
+    with poll_history_lock:
+        poll_list_for_table = list(reversed(poll_history))
 
     with commands_lock:
         cmds_copy = commands.copy()
@@ -229,14 +249,16 @@ def index():
 
     return render_template_string(
         HTML_TEMPLATE,
-        history=hist_list,                 # 历史仍展示全部请求（含 commands）
-        latest=latest_detail,              # 但“最新账户状态”只来自 status
-        latest_raw=latest_status_record,   # 原始 JSON 也对应 status
+        history=history_list_for_table,
+        poll_history=poll_list_for_table,
+        latest=latest_detail,
+        latest_raw=latest_record,
         commands=cmds_copy,
         MAX_HISTORY=MAX_HISTORY,
         paused=current_paused,
         restricted=restricted
     )
+
 
 # ==================== 旧版 /web/api/echo 接口 ====================
 @app.route('/web/api/echo', methods=['POST'])
@@ -244,7 +266,8 @@ def mt4_webhook_echo():
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
+
+    store_mt4_data(raw_body, client_ip, headers_dict, category="echo")
 
     response_lines = []
     with commands_lock:
@@ -258,18 +281,21 @@ def mt4_webhook_echo():
     else:
         return 'NOCOMMAND', 200, {'Content-Type': 'text/plain; charset=utf-8'}
 
+
 # ==================== MT4 专用接口 ====================
 @app.route('/web/api/mt4/commands', methods=['POST'])
 def mt4_commands():
     if is_restricted_time():
         with pause_lock:
-            return jsonify({'commands': [], 'paused': paused}), 200
+            current_paused = paused
+        return jsonify({'commands': [], 'paused': current_paused}), 200
 
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
 
-    parsed_json, _ = store_mt4_data(raw_body, client_ip, headers_dict)
+    # 这是轮询请求：单独存 poll_history（不污染主 history）
+    parsed_json, _ = store_mt4_data(raw_body, client_ip, headers_dict, category="poll")
 
     if parsed_json is None or not isinstance(parsed_json, dict):
         return jsonify({'error': 'Invalid JSON', 'commands': []}), 400
@@ -280,26 +306,27 @@ def mt4_commands():
         account_commands = []
         remaining_commands = []
         for cmd in commands:
-            # 命令没有 account 或 account 匹配则下发
+            # 重要：account 为空(None) 代表“广播给所有账户”
             if cmd.get('account') is None or cmd.get('account') == account:
                 account_commands.append(cmd)
             else:
                 remaining_commands.append(cmd)
         commands[:] = remaining_commands
 
-    print("SEND CMDS:", json.dumps(account_commands, ensure_ascii=False))
+    print("[SEND CMDS]", json.dumps(account_commands, ensure_ascii=False))
 
     with pause_lock:
         current_paused = paused
 
     return jsonify({'commands': account_commands, 'paused': current_paused}), 200
 
+
 @app.route('/web/api/mt4/status', methods=['POST'])
 def mt4_status():
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
+    store_mt4_data(raw_body, client_ip, headers_dict, category="status")
     return 'OK', 200
 
 @app.route('/web/api/mt4/positions', methods=['POST'])
@@ -307,7 +334,7 @@ def mt4_positions():
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
+    store_mt4_data(raw_body, client_ip, headers_dict, category="positions")
     return 'OK', 200
 
 @app.route('/web/api/mt4/report', methods=['POST'])
@@ -315,7 +342,7 @@ def mt4_report():
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
+    store_mt4_data(raw_body, client_ip, headers_dict, category="report")
     return 'OK', 200
 
 @app.route('/web/api/mt4/quote', methods=['POST'])
@@ -323,8 +350,9 @@ def mt4_quote():
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
+    store_mt4_data(raw_body, client_ip, headers_dict, category="quote")
     return 'OK', 200
+
 
 # ==================== 网页指令管理 ====================
 @app.route('/send_command', methods=['POST'])
@@ -344,12 +372,20 @@ def send_command():
     ticket = request.form.get('ticket', '').strip()
     lots = request.form.get('lots', '').strip()
 
-    # 基础校验
+    # 强校验
     if cmd_type in ['MARKET', 'LIMIT']:
-        if not symbol or side not in ['BUY', 'SELL'] or not volume:
+        if not symbol:
+            print("拒绝发单：symbol 为空")
+            return redirect(url_for('index'))
+        if side not in ['BUY', 'SELL']:
+            print("拒绝发单：side 无效", side)
+            return redirect(url_for('index'))
+        if not volume:
+            print("拒绝发单：volume 为空")
             return redirect(url_for('index'))
     elif cmd_type == 'CLOSE':
         if not ticket:
+            print("拒绝发单：ticket 为空")
             return redirect(url_for('index'))
     else:
         return redirect(url_for('index'))
@@ -357,26 +393,32 @@ def send_command():
     try:
         if cmd_type in ['MARKET', 'LIMIT']:
             volume = float(volume)
+            if volume <= 0:
+                print("拒绝发单：volume 必须 > 0")
+                return redirect(url_for('index'))
             sl = float(sl) if sl else None
             tp = float(tp) if tp else None
         if cmd_type == 'LIMIT':
             price = float(price) if price else 0.0
+            if price <= 0:
+                print("拒绝发单：限价单 price 必须 > 0")
+                return redirect(url_for('index'))
         if cmd_type == 'CLOSE':
             ticket = int(ticket)
             lots = float(lots) if lots else 0.0
     except ValueError:
+        print("拒绝发单：数值转换失败")
         return redirect(url_for('index'))
 
-    # 如果未提供账户，尝试从最新 status 记录中获取
+    # 账户处理：
+    # - 空 → 尝试从最新 status 记录里拿
+    # - 仍为空 → None（代表广播给所有账户）
     if not account:
         with history_lock:
-            latest_status = next((r for r in history if r.get("path") == "/web/api/mt4/status"), None)
-            if latest_status:
-                account = latest_status.get("account") or ""
+            if history and isinstance(history[0].get("parsed"), dict):
+                account = history[0]["parsed"].get("account")
         if not account:
             account = None
-    else:
-        account = account.strip()
 
     now = int(time.time())
     cmd = {
@@ -386,17 +428,18 @@ def send_command():
         'ttl_sec': 10,
     }
     if account:
-        cmd['account'] = account
+        cmd['account'] = str(account)
 
     if cmd_type == 'MARKET':
         cmd['action'] = 'market'
         cmd['symbol'] = symbol
-        cmd['side'] = side.lower()
+        cmd['side'] = side.lower()  # buy/sell
         cmd['volume'] = volume
         if sl is not None:
             cmd['sl_price'] = sl
         if tp is not None:
             cmd['tp_price'] = tp
+
     elif cmd_type == 'LIMIT':
         cmd['action'] = 'limit'
         cmd['symbol'] = symbol
@@ -407,13 +450,14 @@ def send_command():
             cmd['sl'] = sl
         if tp is not None:
             cmd['tp'] = tp
+
     elif cmd_type == 'CLOSE':
         cmd['action'] = 'close'
         cmd['ticket'] = ticket
-        if lots > 0:
+        if lots and lots > 0:
             cmd['lots'] = lots
 
-    print("ADD CMD:", json.dumps(cmd, ensure_ascii=False))
+    print("[ADD CMD]", json.dumps(cmd, ensure_ascii=False))
 
     with commands_lock:
         commands.append(cmd)
@@ -433,6 +477,8 @@ def clear_commands():
     with commands_lock:
         commands.clear()
     return redirect(url_for('index'))
+
+
 
 # ==================== HTML模板（保持你的原版，不删）====================
 HTML_TEMPLATE = """\
@@ -882,3 +928,5 @@ HTML_TEMPLATE = """\
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
+
+
