@@ -105,20 +105,16 @@ def detect_category(path: str, parsed_json: dict):
     if path.endswith("/web/api/echo"):
         return "echo"
     if path.endswith("/web/api/mt4/commands"):
-        # 区分：轮询请求 vs 返回命令（这里存的是请求 body，所以是 poll）
-        if isinstance(parsed_json, dict):
-            keys = set(parsed_json.keys())
-            # 只含 account/max => 轮询请求
-            if keys.issubset({"account", "max"}):
-                return "poll"
-        return "poll"
+        # 轮询请求 body 只包含 account 和 max
+        if isinstance(parsed_json, dict) and set(parsed_json.keys()).issubset({"account", "max"}):
+            return "poll"
+        return "poll"  # 默认归为 poll，避免污染其他分类
     return "other"
 
 def store_mt4_data(raw_body, client_ip, headers_dict):
     parsed_json, parse_error, parse_error_detail, remaining_data = try_parse_json(raw_body)
     category = detect_category(request.path, parsed_json if isinstance(parsed_json, dict) else None)
 
-    # 统一记录结构
     record = {
         "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "ip": client_ip,
@@ -139,7 +135,6 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
     }
 
     with history_lock:
-        # 关键：poll/commands 请求不要污染 status 页面
         if category == "status":
             history_status.appendleft(record)
         elif category == "positions":
@@ -151,8 +146,8 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
         elif category == "echo":
             history_echo.appendleft(record)
         else:
-            # 其他你也可以选择不存
-            history_poll.appendleft(record)
+            # 其他未知类型，可丢弃或存入一个专门队列
+            pass
 
     return parsed_json, record
 
@@ -164,16 +159,16 @@ def auto_fill_status(parsed: dict):
     自动补齐 / 兜底计算：
     - margin_level = equity / margin * 100
     - floating_pnl 缺失 -> 0
-    - daily_pnl = daily_closed_pnl + floating_pnl (缺失就尽量算)
+    - daily_pnl = daily_closed_pnl + floating_pnl
     - daily_return = daily_pnl / day_start_equity
-    - exposure_notional / leverage_used / risk_flags 缺失 -> 给默认值或推导
-    - metrics 缺失 -> 补空结构
+    - exposure_notional / leverage_used 保持原样，若缺失则设为 None
+    - risk_flags 缺失 -> ""
+    - metrics 缺失 -> 补全所有字段为 None 或 0（计数类为 0）
+    - free_margin = equity - margin（如果两者都存在）
     """
     if not isinstance(parsed, dict):
         return parsed
 
-    # 统一把 None 的数值字段转为 None（不强制为0，避免误导）
-    # 但某些你希望不要显示 None 的，我们会给默认
     equity = parsed.get("equity")
     balance = parsed.get("balance")
     margin = parsed.get("margin")
@@ -183,7 +178,7 @@ def auto_fill_status(parsed: dict):
     if parsed.get("floating_pnl") is None:
         parsed["floating_pnl"] = 0.0
 
-    # margin_level：如果缺失且 margin>0 就算；否则给 None（前端显示 N/A）
+    # margin_level：如果缺失且 margin>0 就算；否则给 None
     if parsed.get("margin_level") is None:
         if safe_num(equity) and safe_num(margin) and margin > 0:
             parsed["margin_level"] = (equity / margin) * 100
@@ -216,7 +211,6 @@ def auto_fill_status(parsed: dict):
     if parsed.get("exposure_notional") is None:
         parsed["exposure_notional"] = None
     if parsed.get("leverage_used") is None:
-        # 如果 exposure_notional 有且 equity 有，可以算一下
         en = parsed.get("exposure_notional")
         if safe_num(en) and safe_num(equity) and equity != 0:
             parsed["leverage_used"] = en / equity
@@ -227,29 +221,6 @@ def auto_fill_status(parsed: dict):
     if parsed.get("risk_flags") is None:
         parsed["risk_flags"] = ""
 
-    # metrics：补齐结构
-    metrics = parsed.get("metrics")
-    if not isinstance(metrics, dict):
-        metrics = {}
-    for k in [
-        "poll_latency_ms",
-        "last_http_code",
-        "last_error",
-        "queue_batch_size",
-        "reports_sent_count",
-        "executed_commands",
-        "failed_commands",
-    ]:
-        if k not in metrics:
-            # 合理默认：计数类默认0，字符串默认空，code默认None
-            if k in ("reports_sent_count", "executed_commands", "failed_commands", "queue_batch_size"):
-                metrics[k] = 0
-            elif k in ("last_error",):
-                metrics[k] = ""
-            else:
-                metrics[k] = None
-    parsed["metrics"] = metrics
-
     # free_margin：如果缺失且 equity/margin 有，尝试补一下
     if parsed.get("free_margin") is None:
         if safe_num(equity) and safe_num(margin):
@@ -257,11 +228,32 @@ def auto_fill_status(parsed: dict):
         else:
             parsed["free_margin"] = None
 
-    # balance/equity 如果缺失就保持 None
+    # metrics：补齐结构，确保所有子字段存在
+    metrics = parsed.get("metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    # 定义所有 metrics 字段及其默认值（None 表示未知，0 表示计数）
+    metric_fields = {
+        "poll_latency_ms": None,
+        "last_http_code": None,
+        "last_error": "",
+        "queue_batch_size": 0,
+        "reports_sent_count": 0,
+        "executed_commands": 0,
+        "failed_commands": 0,
+    }
+    for k, default in metric_fields.items():
+        if k not in metrics:
+            metrics[k] = default
+    parsed["metrics"] = metrics
+
+    # 保留原始数值字段（可能为 None）
     parsed["balance"] = balance
     parsed["equity"] = equity
     parsed["margin"] = margin
-    parsed["free_margin"] = parsed.get("free_margin", free_margin)
+    # free_margin 可能已更新
+    if parsed.get("free_margin") is None and free_margin is not None:
+        parsed["free_margin"] = free_margin
 
     return parsed
 
@@ -343,15 +335,14 @@ def api_status():
 @app.route("/")
 def index():
     with history_lock:
-        # 最新 status：只从 status 队列取，避免 None 污染
+        # 最新 status：只从 status 队列取
         latest_status_record = history_status[0] if history_status else None
         latest_detail = extract_latest_details_from_status(latest_status_record)
 
-        # 展示表格：你可以选 status 表，或合并展示
-        # 这里为了不刷屏，表格展示 status 历史
+        # 展示表格：status 历史
         hist_list = list(reversed(history_status))
 
-        # 另外把 poll（commands请求）也给你一个小表，便于排查
+        # poll 请求历史（用于调试）
         poll_list = list(reversed(history_poll))
 
     with commands_lock:
@@ -385,7 +376,6 @@ def mt4_webhook_echo():
     with commands_lock:
         if commands:
             for cmd in commands:
-                # echo 旧格式不建议继续用；这里保留原来逻辑
                 side = cmd.get("side", "")
                 symbol = cmd.get("symbol", "")
                 volume = cmd.get("volume", "")
@@ -421,7 +411,6 @@ def mt4_commands():
     if parsed_json is None:
         return jsonify({"error": "Invalid JSON", "commands": []}), 400
 
-    # EA 轮询带 account
     account = parsed_json.get("account") if isinstance(parsed_json, dict) else None
     account = norm_str(account)
 
@@ -430,14 +419,12 @@ def mt4_commands():
         remaining_commands = []
         for cmd in commands:
             cmd_acc = cmd.get("account")
-            # 如果命令没指定账户 => 广播；否则需要匹配
             if cmd_acc is None or norm_str(cmd_acc) == account:
                 account_commands.append(cmd)
             else:
                 remaining_commands.append(cmd)
         commands[:] = remaining_commands
 
-    # 调试：观察下发给 EA 的命令结构
     print("[SEND CMDS]:", json.dumps(account_commands, ensure_ascii=False))
 
     with pause_lock:
@@ -550,7 +537,7 @@ def send_command():
             if history_status and isinstance(history_status[0].get("parsed"), dict):
                 account = norm_str(history_status[0]["parsed"].get("account"))
 
-    # 命令对象：action 必须小写，side 必须 buy/sell
+    # 命令对象
     now = int(time.time())
     cmd = {
         "id": str(cmd_counter),
