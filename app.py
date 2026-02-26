@@ -165,6 +165,23 @@ def extract_latest_details(record):
     }
 
 
+def compact_json(payload: dict) -> str:
+    """输出紧凑 JSON（无空格），兼容 MT4 EA 旧版 GetString() 解析器"""
+    return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+
+
+def normalize_side(side_raw: str) -> str:
+    """将 BUY/SELL/ buy / sell / 带空格等统一成 buy/sell，其他返回空字符串"""
+    s = (side_raw or "").strip().lower()
+    if s in ("buy", "sell"):
+        return s
+    if s in ("b", "long"):
+        return "buy"
+    if s in ("s", "short"):
+        return "sell"
+    return ""
+
+
 # ==================== 暂停控制接口 ====================
 @app.route('/api/pause', methods=['POST'])
 def api_pause():
@@ -240,25 +257,24 @@ def mt4_webhook_echo():
 @app.route('/web/api/mt4/commands', methods=['POST'])
 def mt4_commands():
     """
-    关键修复：不要用 jsonify() 返回（jsonify 默认会输出带空格的 JSON），
-    EA 端旧版 GetString() 只能识别 `"key":"value"`，识别不了 `"key": "value"`。
-    所以这里用 separators=(',',':') 输出紧凑 JSON，确保 EA 能解析 side/symbol。
+    关键修复：不要用 jsonify() 返回（jsonify 默认带空格），
+    EA 旧版 GetString() 只能识别 `"key":"value"`，不能识别 `"key": "value"`。
     """
+    with pause_lock:
+        current_paused = paused
+
     if is_restricted_time():
-        payload = {'commands': [], 'paused': paused}
-        return Response(json.dumps(payload, ensure_ascii=False, separators=(',', ':')),
-                        mimetype='application/json'), 200
+        payload = {'commands': [], 'paused': current_paused}
+        return Response(compact_json(payload), mimetype='application/json'), 200
 
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
 
     parsed_json, _ = store_mt4_data(raw_body, client_ip, headers_dict)
-
     if parsed_json is None:
         payload = {'error': 'Invalid JSON', 'commands': []}
-        return Response(json.dumps(payload, ensure_ascii=False, separators=(',', ':')),
-                        mimetype='application/json'), 400
+        return Response(compact_json(payload), mimetype='application/json'), 400
 
     account = parsed_json.get('account')
 
@@ -267,22 +283,15 @@ def mt4_commands():
         remaining_commands = []
         for cmd in commands:
             cmd_acc = cmd.get('account', None)
-            # cmd_acc == None 表示广播命令
             if cmd_acc is None or cmd_acc == account:
                 account_commands.append(cmd)
             else:
                 remaining_commands.append(cmd)
         commands[:] = remaining_commands
 
-    with pause_lock:
-        current_paused = paused
-
     payload = {'commands': account_commands, 'paused': current_paused}
-    # 这行可以帮助你在服务器日志里确认“发给EA的JSON长什么样”
-    print("[mt4_commands] SEND:", json.dumps(payload, ensure_ascii=False, separators=(',', ':')))
-
-    return Response(json.dumps(payload, ensure_ascii=False, separators=(',', ':')),
-                    mimetype='application/json'), 200
+    print("[mt4_commands] SEND:", compact_json(payload))
+    return Response(compact_json(payload), mimetype='application/json'), 200
 
 
 @app.route('/web/api/mt4/status', methods=['POST'])
@@ -331,7 +340,8 @@ def send_command():
     account = (request.form.get('account', '') or '').strip()
     cmd_type = request.form.get('cmd_type', 'MARKET')
     symbol = (request.form.get('symbol', '') or '').strip().upper()
-    side = (request.form.get('side', '') or '').strip().upper()
+    side_raw = (request.form.get('side', '') or '')
+    side = normalize_side(side_raw)
     volume = (request.form.get('volume', '') or '').strip()
     price = (request.form.get('price', '') or '').strip()
     sl = (request.form.get('sl', '') or '').strip()
@@ -339,13 +349,13 @@ def send_command():
     ticket = (request.form.get('ticket', '') or '').strip()
     lots = (request.form.get('lots', '') or '').strip()
 
-    # 强校验
+    # ===== 强校验：确保必要字段有效 =====
     if cmd_type in ['MARKET', 'LIMIT']:
         if not symbol:
             print("拒绝发单：symbol 为空")
             return redirect(url_for('index'))
-        if side not in ['BUY', 'SELL']:
-            print("拒绝发单：side 无效", side)
+        if side not in ['buy', 'sell']:
+            print("拒绝发单：side 无效", repr(side_raw))
             return redirect(url_for('index'))
         if not volume:
             print("拒绝发单：volume 为空")
@@ -377,13 +387,13 @@ def send_command():
         print("拒绝发单：数值转换失败")
         return redirect(url_for('index'))
 
-    # 如果未填 account，就尝试用最近一次上报的 account；仍没有就广播(None)
+    # ===== 账户处理：如果没填，尝试从历史记录获取；仍无则广播（不写 account 字段）=====
     if not account:
         with history_lock:
             if history:
                 account = history[0].get('account') or ''
         if not account:
-            account = None  # 广播
+            account = None
 
     now = int(time.time())
     cmd = {
@@ -395,17 +405,10 @@ def send_command():
     if account:
         cmd['account'] = account
 
-    # 关键：side 标准化为 buy/sell（小写、去空格）
-    side_norm = side.strip().lower()
-    if side_norm == 'buy':
-        side_norm = 'buy'
-    elif side_norm == 'sell':
-        side_norm = 'sell'
-
     if cmd_type == 'MARKET':
         cmd['action'] = 'market'
         cmd['symbol'] = symbol
-        cmd['side'] = side_norm
+        cmd['side'] = side
         cmd['volume'] = volume
         if sl is not None:
             cmd['sl_price'] = sl
@@ -415,7 +418,7 @@ def send_command():
     elif cmd_type == 'LIMIT':
         cmd['action'] = 'limit'
         cmd['symbol'] = symbol
-        cmd['side'] = side_norm
+        cmd['side'] = side
         cmd['volume'] = volume
         cmd['price'] = price
         if sl is not None:
@@ -429,7 +432,7 @@ def send_command():
         if lots > 0:
             cmd['lots'] = lots
 
-    print("[send_command] ADD:", json.dumps(cmd, ensure_ascii=False, separators=(',', ':')))
+    print("[send_command] ADD:", compact_json(cmd))
 
     with commands_lock:
         commands.append(cmd)
@@ -453,8 +456,8 @@ def clear_commands():
     return redirect(url_for('index'))
 
 
-# ==================== HTML模板（你的原版，不删）====================
-HTML_TEMPLATE = r"""
+# ==================== HTML模板（你的原版，完整保留）====================
+HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -476,6 +479,7 @@ HTML_TEMPLATE = r"""
         .info-box { background: #d1e7ff; border-radius: 8px; padding: 12px; margin-bottom: 15px; border-left: 5px solid #0a58ca; }
         .pause-control { background: #f8d7da; border-left: 5px solid #dc3545; }
 
+        /* 限制模式样式 */
         .restricted-mode {
             background-color: black !important;
             min-height: 100vh;
@@ -508,6 +512,7 @@ HTML_TEMPLATE = r"""
 </head>
 <body>
     {% if restricted %}
+    <!-- 限制模式显示 -->
     <div class="restricted-mode">
         <div class="status-box">
             <div class="row">
@@ -532,15 +537,16 @@ HTML_TEMPLATE = r"""
         <div>为人民服务</div>
     </div>
     {% else %}
+    <!-- 正常模式显示 -->
     <div class="container">
         <h1 class="mb-3"><i class="bi bi-cpu"></i> MT4 远程交易执行 · 专业监控</h1>
-
+        
         <div class="info-box d-flex justify-content-between align-items-center">
             <div>
                 <i class="bi bi-info-circle-fill me-2"></i>
-                <strong>MT4专用接口：</strong>
-                <code>/web/api/mt4/commands</code> (轮询),
-                <code>/web/api/mt4/status</code> (状态),
+                <strong>MT4专用接口：</strong> 
+                <code>/web/api/mt4/commands</code> (轮询), 
+                <code>/web/api/mt4/status</code> (状态), 
                 <code>/web/api/mt4/positions</code> (持仓)
                 <span class="badge bg-secondary ms-2">等待指令返回</span>
                 <br><small class="text-muted">原 <code>/web/api/echo</code> 接口仍保留，用于调试</small>
@@ -548,6 +554,7 @@ HTML_TEMPLATE = r"""
             <span class="text-muted small">指令将按账户过滤后返回</span>
         </div>
 
+        <!-- 暂停控制卡片 -->
         <div class="card shadow-sm mb-3 pause-control">
             <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
                 <span><i class="bi bi-pause-circle"></i> 应急暂停控制</span>
@@ -563,6 +570,7 @@ HTML_TEMPLATE = r"""
             </div>
         </div>
 
+        <!-- 最新上报详细数据卡片 -->
         <div class="card mb-4 shadow-sm">
             <div class="card-header bg-primary text-white bg-gradient">
                 <i class="bi bi-graph-up-arrow"></i> 最新账户状态
@@ -590,57 +598,324 @@ HTML_TEMPLATE = r"""
                             <div class="stat-item"><span class="stat-label">时间戳(ts)</span><div class="stat-value">{{ latest.ts or 'N/A' }}</div></div>
                             <div class="stat-item"><span class="stat-label">余额</span><div class="stat-value">{{ "%.2f"|format(latest.balance) if latest.balance is number else latest.balance }}</div></div>
                             <div class="stat-item"><span class="stat-label">净值</span><div class="stat-value">{{ "%.2f"|format(latest.equity) if latest.equity is number else latest.equity }}</div></div>
+                            <div class="stat-item"><span class="stat-label">已用预付款</span><div class="stat-value">{{ "%.2f"|format(latest.margin) if latest.margin is number else latest.margin }}</div></div>
+                            <div class="stat-item"><span class="stat-label">可用预付款</span><div class="stat-value">{{ "%.2f"|format(latest.free_margin) if latest.free_margin is number else latest.free_margin }}</div></div>
+                            <div class="stat-item"><span class="stat-label">预付款比例</span><div class="stat-value">{{ "%.2f"|format(latest.margin_level) if latest.margin_level is number else latest.margin_level }}%</div></div>
                             <div class="stat-item"><span class="stat-label">浮动盈亏</span><div class="stat-value">{{ "%.2f"|format(latest.floating_pnl) if latest.floating_pnl is number else latest.floating_pnl }}</div></div>
+                            <div class="stat-item"><span class="stat-label">日初始净值</span><div class="stat-value">{{ "%.2f"|format(latest.day_start_equity) if latest.day_start_equity is number else latest.day_start_equity }}</div></div>
+                            <div class="stat-item"><span class="stat-label">日盈亏</span><div class="stat-value">{{ "%.2f"|format(latest.daily_pnl) if latest.daily_pnl is number else latest.daily_pnl }}</div></div>
+                            <div class="stat-item"><span class="stat-label">日盈亏率</span><div class="stat-value">{{ "%.5f"|format(latest.daily_return) if latest.daily_return is number else latest.daily_return }}</div></div>
                             <div class="stat-item"><span class="stat-label">网络延迟(ms)</span><div class="stat-value">{{ "%.0f"|format(latest.poll_latency_ms) if latest.poll_latency_ms is number else latest.poll_latency_ms }}</div></div>
                             <div class="stat-item"><span class="stat-label">上次HTTP代码</span><div class="stat-value">{{ latest.last_http_code or 'N/A' }}</div></div>
                             {% if latest.last_error %}
                             <div class="stat-item"><span class="stat-label">错误信息</span><div class="stat-value text-danger">{{ latest.last_error }}</div></div>
                             {% endif %}
                         </div>
+
+                        <!-- 持仓列表（如果有） -->
+                        {% if latest.positions %}
+                        <div class="mt-4">
+                            <button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#positionsCollapse" aria-expanded="false">
+                                <i class="bi bi-list-ul"></i> 显示持仓 ({{ latest.positions|length }})
+                            </button>
+                            <div class="collapse mt-2" id="positionsCollapse">
+                                <div class="card card-body p-0">
+                                    <table class="table table-sm table-striped mb-0">
+                                        <thead>
+                                            <tr>
+                                                <th>订单号</th>
+                                                <th>品种</th>
+                                                <th>类型</th>
+                                                <th>手数</th>
+                                                <th>开仓价</th>
+                                                <th>止损</th>
+                                                <th>止盈</th>
+                                                <th>开仓时间</th>
+                                                <th>利润</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {% for pos in latest.positions %}
+                                            <tr>
+                                                <td>{{ pos.ticket }}</td>
+                                                <td>{{ pos.symbol }}</td>
+                                                <td>{{ pos.type }}</td>
+                                                <td>{{ pos.lots }}</td>
+                                                <td>{{ pos.open_price }}</td>
+                                                <td>{{ pos.sl }}</td>
+                                                <td>{{ pos.tp }}</td>
+                                                <td>{{ pos.open_time_str }}</td>
+                                                <td>{{ "%.2f"|format(pos.profit) if pos.profit is number else pos.profit }}</td>
+                                            </tr>
+                                            {% endfor %}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+
+                        {% if latest.remaining_data %}
+                        <div class="mt-3 alert alert-info">
+                            <strong>检测到额外数据（可能为多个JSON）：</strong>
+                            <pre class="mb-0" style="font-size:0.75rem;">{{ latest.remaining_data }}</pre>
+                        </div>
+                        {% endif %}
+
                     {% endif %}
+                    <div class="mt-3">
+                        <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#rawJsonPreview" aria-expanded="false">
+                            <i class="bi bi-code-slash"></i> 查看原始JSON
+                        </button>
+                        <div class="collapse mt-2" id="rawJsonPreview">
+                            <pre class="bg-light p-3 rounded" style="font-size:0.75rem;">{{ latest_raw.body_raw if latest_raw else '无原始数据' }}</pre>
+                        </div>
+                    </div>
                 {% else %}
-                    <p class="text-muted"><i class="bi bi-exclamation-circle"></i> 尚未收到任何MT4上报数据。</p>
+                    <p class="text-muted"><i class="bi bi-exclamation-circle"></i> 尚未收到任何MT4上报数据，请等待终端上报或使用curl测试。</p>
                 {% endif %}
             </div>
         </div>
 
-        <!-- 下面的历史&队列&表单（你原来的）我保持不删，为节省篇幅省略展示，但你可以继续用你原版那段 -->
-        <p class="text-muted">（此处请继续保留你原来完整的“历史记录 + 指令队列 + 发单表单”HTML，逻辑不变）</p>
+        <!-- 两列布局：左侧历史记录，右侧指令管理 -->
+        <div class="row">
+            <div class="col-lg-7 mb-4">
+                <div class="card shadow-sm h-100">
+                    <div class="card-header bg-secondary text-white">
+                        <i class="bi bi-clock-history"></i> 最近上报历史 ({{ history|length }}/{{ MAX_HISTORY }})
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover history-table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>时间</th>
+                                        <th>账户</th>
+                                        <th>余额</th>
+                                        <th>净值</th>
+                                        <th>浮动盈亏</th>
+                                        <th>IP</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for rec in history %}
+                                    <tr>
+                                        <td>{{ rec.received_at.split(' ')[1] }}</td>
+                                        <td>{{ rec.account or '-' }}</td>
+                                        <td>{{ "%.2f"|format(rec.balance) if rec.balance is number else rec.balance }}</td>
+                                        <td>{{ "%.2f"|format(rec.equity) if rec.equity is number else rec.equity }}</td>
+                                        <td>{{ "%.2f"|format(rec.floating_pnl) if rec.floating_pnl is number else rec.floating_pnl }}</td>
+                                        <td><span class="badge-ip">{{ rec.ip }}</span></td>
+                                        <td>
+                                            <button class="btn btn-sm btn-outline-info" type="button" 
+                                                    data-bs-toggle="collapse" data-bs-target="#raw-{{ loop.index }}" 
+                                                    aria-expanded="false"><i class="bi bi-eye"></i></button>
+                                            <div class="collapse mt-1" id="raw-{{ loop.index }}">
+                                                <div class="card card-body p-2">
+                                                    <small>{{ rec.body_raw }}</small>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="7" class="text-center text-muted">暂无历史数据</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
+            <div class="col-lg-5 mb-4">
+                <div class="card shadow-sm mb-4">
+                    <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+                        <span><i class="bi bi-list-check"></i> 待发送指令队列 ({{ commands|length }})</span>
+                        <form method="post" action="{{ url_for('clear_commands') }}" style="display:inline;">
+                            <button type="submit" class="btn btn-sm btn-light" onclick="return confirm('确定清空所有指令？')"><i class="bi bi-trash"></i> 清空</button>
+                        </form>
+                    </div>
+                    <div class="card-body">
+                        {% if commands %}
+                            {% for cmd in commands %}
+                            <div class="command-item d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong>{{ cmd.action }}</strong>
+                                    {% if cmd.action == 'market' %}
+                                        {{ cmd.side.upper() }} {{ cmd.symbol }} {{ cmd.volume }}手
+                                        {% if cmd.sl_price %} SL:{{ cmd.sl_price }}{% endif %}
+                                        {% if cmd.tp_price %} TP:{{ cmd.tp_price }}{% endif %}
+                                    {% elif cmd.action == 'limit' %}
+                                        {{ cmd.side.upper() }} {{ cmd.symbol }} {{ cmd.volume }}手 @ {{ cmd.price }}
+                                        {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
+                                        {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
+                                    {% elif cmd.action == 'close' %}
+                                        平仓 票号:{{ cmd.ticket }}{% if cmd.lots %} 手数:{{ cmd.lots }}{% endif %}
+                                    {% endif %}
+                                    <br><small class="text-muted"><i class="bi bi-clock"></i> 账户: {{ cmd.account if cmd.account else '无(广播)' }} | ID: {{ cmd.id }}</small>
+                                </div>
+                                <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')"><i class="bi bi-x"></i></button>
+                                </form>
+                            </div>
+                            {% endfor %}
+                        {% else %}
+                            <p class="text-muted mb-0"><i class="bi bi-inbox"></i> 队列为空，暂无待发指令。</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- 增强版发单表单 -->
+                <div class="card shadow-sm">
+                    <div class="card-header bg-warning">
+                        <i class="bi bi-pencil-square"></i> 下达新交易指令
+                    </div>
+                    <div class="card-body">
+                        <form method="post" action="{{ url_for('send_command') }}" id="commandForm">
+                            <div class="mb-2">
+                                <label class="form-label">账户 <span class="text-muted">(可选，将自动保存)</span></label>
+                                <input type="text" name="account" class="form-control form-control-sm" placeholder="833711" id="accountInput">
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">指令类型</label>
+                                <select name="cmd_type" class="form-select form-select-sm" id="cmdTypeSelect" required>
+                                    <option value="MARKET" selected>市价单 (MARKET)</option>
+                                    <option value="LIMIT">限价单 (LIMIT)</option>
+                                    <option value="CLOSE">平仓 (CLOSE)</option>
+                                </select>
+                            </div>
+
+                            <!-- 市价/限价通用字段 -->
+                            <div id="tradeFields">
+                                <div class="mb-2">
+                                    <label class="form-label">品种 <span class="text-muted">(如 EURUSD)</span></label>
+                                    <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label">方向</label>
+                                    <select name="side" class="form-select form-select-sm">
+                                        <option value="BUY">买入 (BUY)</option>
+                                        <option value="SELL">卖出 (SELL)</option>
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label">手数</label>
+                                    <input type="number" step="0.01" min="0.01" name="volume" class="form-control form-control-sm" value="0.1">
+                                </div>
+                                <div class="row">
+                                    <div class="col mb-2">
+                                        <label class="form-label">止损 (SL)</label>
+                                        <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="可选">
+                                    </div>
+                                    <div class="col mb-2">
+                                        <label class="form-label">止盈 (TP)</label>
+                                        <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="可选">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 限价单专用字段 -->
+                            <div id="limitFields" style="display: none;">
+                                <div class="mb-2">
+                                    <label class="form-label">限价价格</label>
+                                    <input type="number" step="0.00001" name="price" class="form-control form-control-sm" placeholder="如 1.1050">
+                                </div>
+                            </div>
+
+                            <!-- 平仓专用字段 -->
+                            <div id="closeFields" style="display: none;">
+                                <div class="mb-2">
+                                    <label class="form-label">订单号 (ticket)</label>
+                                    <input type="number" name="ticket" class="form-control form-control-sm" placeholder="如 12345678">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label">手数 <span class="text-muted">(可选，留空则全部平仓)</span></label>
+                                    <input type="number" step="0.01" min="0.01" name="lots" class="form-control form-control-sm" placeholder="可选">
+                                </div>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary w-100 mt-2"><i class="bi bi-send"></i> 加入指令队列</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
     {% endif %}
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // 账户本地存储
+        document.addEventListener('DOMContentLoaded', function() {
+            const savedAccount = localStorage.getItem('mt4_default_account');
+            if (savedAccount) {
+                document.getElementById('accountInput').value = savedAccount;
+            }
+        });
+
+        document.getElementById('commandForm')?.addEventListener('submit', function() {
+            const accountInput = document.getElementById('accountInput').value;
+            if (accountInput) {
+                localStorage.setItem('mt4_default_account', accountInput);
+            }
+        });
+
+        // 暂停控制
         function updatePauseStatus() {
             fetch('/api/status')
-                .then(r => r.json())
+                .then(response => response.json())
                 .then(data => {
                     const statusEl = document.getElementById('pause-status');
                     const pauseBtn = document.getElementById('pause-btn');
                     const resumeBtn = document.getElementById('resume-btn');
-                    if (!statusEl) return;
                     if (data.paused) {
                         statusEl.innerText = '已暂停';
                         statusEl.className = 'text-danger';
-                        if (pauseBtn) pauseBtn.disabled = true;
-                        if (resumeBtn) resumeBtn.disabled = false;
+                        pauseBtn.disabled = true;
+                        resumeBtn.disabled = false;
                     } else {
                         statusEl.innerText = '运行中';
                         statusEl.className = 'text-success';
-                        if (pauseBtn) pauseBtn.disabled = false;
-                        if (resumeBtn) resumeBtn.disabled = true;
+                        pauseBtn.disabled = false;
+                        resumeBtn.disabled = true;
                     }
                 });
         }
+
         document.getElementById('pause-btn')?.addEventListener('click', function() {
-            fetch('/api/pause', { method: 'POST' }).then(() => updatePauseStatus());
+            fetch('/api/pause', { method: 'POST' })
+                .then(() => updatePauseStatus());
         });
+
         document.getElementById('resume-btn')?.addEventListener('click', function() {
-            fetch('/api/resume', { method: 'POST' }).then(() => updatePauseStatus());
+            fetch('/api/resume', { method: 'POST' })
+                .then(() => updatePauseStatus());
         });
+
         setInterval(updatePauseStatus, 5000);
         updatePauseStatus();
+
+        // 指令类型切换
+        const cmdTypeSelect = document.getElementById('cmdTypeSelect');
+        const tradeFields = document.getElementById('tradeFields');
+        const limitFields = document.getElementById('limitFields');
+        const closeFields = document.getElementById('closeFields');
+
+        function toggleFields() {
+            const type = cmdTypeSelect.value;
+            tradeFields.style.display = (type === 'MARKET' || type === 'LIMIT') ? 'block' : 'none';
+            limitFields.style.display = (type === 'LIMIT') ? 'block' : 'none';
+            closeFields.style.display = (type === 'CLOSE') ? 'block' : 'none';
+
+            document.querySelector('[name="symbol"]').required = (type === 'MARKET' || type === 'LIMIT');
+            document.querySelector('[name="side"]').required = (type === 'MARKET' || type === 'LIMIT');
+            document.querySelector('[name="volume"]').required = (type === 'MARKET' || type === 'LIMIT');
+            document.querySelector('[name="ticket"]').required = (type === 'CLOSE');
+        }
+
+        cmdTypeSelect.addEventListener('change', toggleFields);
+        toggleFields();
     </script>
 </body>
 </html>
