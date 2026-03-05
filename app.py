@@ -167,6 +167,8 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
         "balance": parsed_json.get("balance") if isinstance(parsed_json, dict) else None,
         "equity": parsed_json.get("equity") if isinstance(parsed_json, dict) else None,
         "floating_pnl": parsed_json.get("floating_pnl") if isinstance(parsed_json, dict) else None,
+        "leverage_used": parsed_json.get("leverage_used") if isinstance(parsed_json, dict) else None,
+        "risk_flags": parsed_json.get("risk_flags") if isinstance(parsed_json, dict) else None,
         "exposure_notional": parsed_json.get("exposure_notional") if isinstance(parsed_json, dict) else None,
         "positions": parsed_json.get("positions") if isinstance(parsed_json, dict) else None,
     }
@@ -546,6 +548,29 @@ def api_latest_status():
             return jsonify(detail)
         else:
             return jsonify({})
+
+# 网页端获取历史成交记录
+@app.route("/api/history_trades", methods=["GET"])
+def api_history_trades():
+    """返回历史成交记录（从 report 数据中提取）"""
+    limit = request.args.get("limit", 20, type=int)
+    
+    with history_lock:
+        trades = []
+        for record in list(history_report)[:limit]:
+            parsed = record.get("parsed", {})
+            if parsed:
+                trades.append({
+                    "received_at": record.get("received_at"),
+                    "cmd_id": parsed.get("cmd_id"),
+                    "ok": parsed.get("ok"),
+                    "ticket": parsed.get("ticket"),
+                    "error": parsed.get("error"),
+                    "message": parsed.get("message"),
+                    "exec_ms": parsed.get("exec_ms"),
+                })
+        
+        return jsonify({"trades": trades})
 
 # ==================== 主页 ====================
 @app.route("/")
