@@ -504,6 +504,8 @@ def extract_latest_details_from_status(record, positions=None):
         "executed_commands": metrics.get("executed_commands"),
         "failed_commands": metrics.get("failed_commands"),
         "position_pct": metrics.get("position_pct", 0),
+        # 添加 positions 数据供前端展示
+        "positions": positions if positions else [],
     }
 
 # ==================== 暂停控制接口 ====================
