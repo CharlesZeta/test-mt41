@@ -1181,78 +1181,32 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
     <div class="symRow">
       <div class="symLeft">
         <div class="symName">
-          <span id="symName">ETHUSDT</span>
-          <span class="symBadge">永续</span>
-          <span class="symBadge" style="cursor:pointer" id="btnPick">▼</span>
+          <input type="text" id="symInput" placeholder="输入交易品种如 BTCUSDT" style="font-size:18px;font-weight:900;border:1px solid var(--line);border-radius:8px;padding:4px 8px;width:180px;">
         </div>
-        <div class="symPnl" id="symChg">-3.71%</div>
-      </div>
-
-      <div class="symRight">
-        <button class="iconBtn" title="K线">📈</button>
-        <button class="iconBtn" title="设置">⚙️</button>
-        <button class="iconBtn" title="更多">⋯</button>
       </div>
     </div>
 
     <div class="grid">
-      <!-- 左：盘口 -->
-      <div class="card orderbook">
-        <div class="obHeader">
-          <div class="obMeta">
-            <div>资金费率 / 倒计时</div>
-            <div id="funding">0.0028% / 07:57:21</div>
-          </div>
-          <div class="obMeta" style="text-align:right">
-            <div>价格(USDT)</div>
-            <div class="val" id="lastPrice">1,932.16</div>
-          </div>
-        </div>
-
-        <div class="obTable">
-          <div class="obHead">价格(USDT)</div><div class="obHead">数量(USDT)</div>
-          <div class="priceRed">1,932.21</div><div>5.00M</div>
-          <div class="priceRed">1,932.20</div><div>5.00M</div>
-          <div class="priceRed">1,932.15</div><div>10.00M</div>
-          <div class="priceRed">1,932.13</div><div>5.00M</div>
-          <div class="priceRed">1,932.08</div><div>5.00M</div>
-        </div>
-
-        <div class="midPrice" id="mid">1,932.16</div>
-        <div class="midSub">标记价 <span id="mark">1,931.88</span></div>
-
-        <div class="obTable" style="margin-top:10px">
-          <div class="priceGreen">1,932.01</div><div>2.16M</div>
-          <div class="priceGreen">1,931.98</div><div>5.01M</div>
-          <div class="priceGreen">1,931.96</div><div>5.07M</div>
-          <div class="priceGreen">1,931.95</div><div>15.11M</div>
-          <div class="priceGreen">1,931.93</div><div>34.78M</div>
-        </div>
-
-        <div class="ratioBar">
-          <div class="bar"><div class="barBuy"></div><div class="barSell"></div></div>
-        </div>
-        <div class="barText">
-          <span>62.94%</span>
-          <span>37.06%</span>
-        </div>
-      </div>
-
-      <!-- 右：下单 -->
-      <div class="card order">
+      <!-- 交易面板 -->
+      <div class="card order" style="width:100%">
         <div class="row">
           <div class="chips">
             <div class="chip primary">全仓</div>
             <div class="chip" id="btnLev">20x</div>
-            <div class="chip">联</div>
           </div>
-          <div class="label">可用 <span class="val" id="avail">5,743.61</span> USDT</div>
+          <div class="label">可用 <span class="val" id="avail">--</span> USDT</div>
         </div>
 
-        <div class="field"><span>市价止盈止损</span><strong>▾</strong></div>
-        <div class="field"><span>触发价 (USDT)</span><strong>标记 ▾</strong></div>
-        <div class="field"><span>市价</span></div>
-        <div class="field"><span>数量 (USDT)</span><strong>USDT ▾</strong></div>
+        <!-- 交易品种输入 -->
+        <div class="field">
+          <span>交易品种</span>
+          <input type="text" id="tradeSymbol" placeholder="如 BTCUSDT" style="border:none;background:transparent;font-weight:900;text-align:right;width:120px;">
+        </div>
+
+        <div class="field">
+          <span>数量 (手)</span>
+          <input type="number" id="tradeLots" placeholder="0.01" style="border:none;background:transparent;font-weight:900;text-align:right;width:80px;">
+        </div>
 
         <!-- 滑轮组：仓位比例 -->
         <div class="wheelWrap">
@@ -1267,32 +1221,25 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
           </div>
         </div>
 
-        <!-- 黄灯提示条（可按阈值切换颜色） -->
+        <!-- 风控提示条 -->
         <div class="riskTip" id="riskTip">
           <div class="lamp" id="lamp"></div>
           <div>
-            风险暴露较高：每点波动≈ <span id="perPointMoney">43.4</span> USDT（<span id="perPointPct">1.17</span>%）
-            <small>叠加仓位后已接近盈亏平衡风险</small>
+            风险提示：每点波动≈ <span id="perPointMoney">--</span> USDT（<span id="perPointPct">--</span>%）
+            <small>根据仓位比例和杠杆计算</small>
           </div>
         </div>
 
-        <div class="toggles">
-          <div class="toggleRow"><span class="radio"></span>止盈/止损</div>
-          <div class="toggleRow"><span class="radio"></span>只减仓</div>
-        </div>
-
         <div class="stats">
-          <div class="statRow"><span class="k">占用保证金</span><span class="v" id="mLong">2,274.10 USDT</span></div>
-          <div class="statRow"><span class="k">强平价格</span><span class="v" id="liqLong">1,854.81 USDT</span></div>
-          <div class="statRow"><span class="k">每点波动(资金/占比)</span><span class="v">≈ <span id="ppLong">43.40</span> USDT / <span id="ppLongPct">1.17</span>%</span></div>
+          <div class="statRow"><span class="k">占用保证金</span><span class="v" id="mLong">-- USDT</span></div>
+          <div class="statRow"><span class="k">强平价格</span><span class="v" id="liqLong">-- USDT</span></div>
         </div>
 
         <button class="cta buy" id="btnBuy">买入/做多</button>
 
         <div class="stats" style="margin-top:14px">
-          <div class="statRow"><span class="k">占用保证金</span><span class="v" id="mShort">2,786.06 USDT</span></div>
-          <div class="statRow"><span class="k">强平价格</span><span class="v" id="liqShort">2,180.96 USDT</span></div>
-          <div class="statRow"><span class="k">每点波动(资金/占比)</span><span class="v">≈ <span id="ppShort">27.80</span> USDT / <span id="ppShortPct">0.75</span>%</span></div>
+          <div class="statRow"><span class="k">占用保证金</span><span class="v" id="mShort">-- USDT</span></div>
+          <div class="statRow"><span class="k">强平价格</span><span class="v" id="liqShort">-- USDT</span></div>
         </div>
 
         <button class="cta sell" id="btnSell">卖出/做空</button>
@@ -1316,29 +1263,6 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
     <div class="navItem">行情</div>
     <div class="navItem active">交易</div>
     <div class="navItem">资产</div>
-  </div>
-
-  <!-- 品种选择弹窗 -->
-  <div class="modalMask" id="pairMask">
-    <div class="modal">
-      <div class="modalHeader">
-        <span>选择交易品种</span>
-        <button class="btn" id="closePair">关闭</button>
-      </div>
-      <div class="modalBody">
-        <input class="search" id="pairSearch" placeholder="搜索" />
-        <div id="pairList" style="margin-top:10px"></div>
-
-        <div style="margin-top:12px; font-weight:1100">添加自定义品种</div>
-        <div class="addRow">
-          <input id="pairNew" placeholder="例如：XAUUSDT / SOLUSDT" />
-          <button class="primaryBtn" id="addPair">添加</button>
-        </div>
-        <div class="mini" style="margin-top:8px">
-          * 本原型仅做 UI/交互演示，行情/保证金/强平价为示例数据。
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- 杠杆弹窗 -->
@@ -1604,15 +1528,7 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
     // 渲染（把 state 填到 UI）
     // -----------------------------
     function renderHeader(){
-      const pair = state.pairs.find(p=>p.sym===state.activeSym);
-      if (pair){
-        $("symName").textContent = pair.sym;
-        $("symChg").textContent = (pair.chg).toFixed(2) + "%";
-        $("symChg").style.color = pair.chg < 0 ? "var(--red)" : "var(--green)";
-        $("lastPrice").textContent = fmtNum(pair.last, pair.last<10?4:2);
-        $("mid").textContent = fmtNum(pair.last, pair.last<10?4:2);
-      }
-      // 优先使用 MT4 实时数据，兜底用 demo 数据
+      // 显示 MT4 账户可用余额
       const displayEquity = state.mt4.equity > 0 ? state.mt4.equity : state.equity;
       $("avail").textContent = fmtNum(displayEquity, 2);
     }
@@ -1779,6 +1695,16 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
       }
     }
 
+    // 弹窗辅助函数
+    function openMask(maskId){
+      const el = document.getElementById(maskId);
+      if(el) el.style.display = "flex";
+    }
+    function closeMask(maskId){
+      const el = document.getElementById(maskId);
+      if(el) el.style.display = "none";
+    }
+
     // -----------------------------
     // 可拖动"滑轮组"组件（通用）
     // -----------------------------
@@ -1905,59 +1831,6 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
     });
 
     // -----------------------------
-    // 品种选择 & 添加
-    // -----------------------------
-    function openMask(maskId){ $(maskId).style.display="flex"; }
-    function closeMask(maskId){ $(maskId).style.display="none"; }
-
-    function renderPairList(filter=""){
-      const wrap = $("pairList");
-      wrap.innerHTML = "";
-      const q = filter.trim().toUpperCase();
-      state.pairs
-        .filter(p=> !q || p.sym.includes(q))
-        .forEach(p=>{
-          const row = document.createElement("div");
-          row.className = "pairRow";
-          row.innerHTML = `
-            <div>
-              <strong>${p.sym}</strong> <span>永续</span>
-            </div>
-            <div style="text-align:right">
-              <strong>${fmtNum(p.last, p.last<10?4:2)}</strong><br/>
-              <span style="color:${p.chg<0?'var(--red)':'var(--green)'}">${p.chg.toFixed(2)}%</span>
-            </div>
-          `;
-          row.addEventListener("click", ()=>{
-            state.activeSym = p.sym;
-            closeMask("pairMask");
-            renderAll();
-          });
-          wrap.appendChild(row);
-        });
-    }
-
-    $("btnPick").addEventListener("click", ()=>{ renderPairList(""); openMask("pairMask"); });
-    $("closePair").addEventListener("click", ()=>closeMask("pairMask"));
-    $("pairMask").addEventListener("click", (e)=>{ if (e.target.id==="pairMask") closeMask("pairMask"); });
-
-    $("pairSearch").addEventListener("input", (e)=>renderPairList(e.target.value));
-
-    $("addPair").addEventListener("click", ()=>{
-      const sym = $("pairNew").value.trim().toUpperCase();
-      if (!sym) return;
-      if (state.pairs.some(p=>p.sym===sym)) {
-        $("pairNew").value = "";
-        renderPairList($("pairSearch").value);
-        return;
-      }
-      // 新增一个默认数据（你后续接行情时替换即可）
-      state.pairs.unshift({ sym, last: 1000, chg: -0.10 });
-      $("pairNew").value = "";
-      renderPairList($("pairSearch").value);
-    });
-
-    // -----------------------------
     // 杠杆弹窗
     // -----------------------------
     $("btnLev").addEventListener("click", ()=>openMask("levMask"));
@@ -1971,9 +1844,62 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
       $("btnLev").textContent = state.leverage + "x";
     });
 
-    // 下单按钮（demo）
-    $("btnBuy").addEventListener("click", ()=>alert(`下单演示：做多 ${state.activeSym}\n仓位：${state.pct}%\n杠杆：${state.leverage}x`));
-    $("btnSell").addEventListener("click", ()=>alert(`下单演示：做空 ${state.activeSym}\n仓位：${state.pct}%\n杠杆：${state.leverage}x`));
+    // 下单按钮（调用后端接口）
+    $("btnBuy").addEventListener("click", async ()=>{
+      const symbol = $("tradeSymbol").value.trim().toUpperCase();
+      const lots = $("tradeLots").value.trim();
+      if(!symbol || !lots){
+        alert("请输入交易品种和数量");
+        return;
+      }
+      try {
+        const formData = new FormData();
+        formData.append("cmd_type", "MARKET");
+        formData.append("symbol", symbol);
+        formData.append("side", "BUY");
+        formData.append("lots", lots);
+
+        const resp = await fetch(API_BASE + "/send_command", {
+          method: "POST",
+          body: formData
+        });
+        if(resp.ok){
+          alert(`下单成功：做多 ${symbol} ${lots}手`);
+        } else {
+          alert("下单失败");
+        }
+      } catch(e){
+        alert("下单出错：" + e.message);
+      }
+    });
+
+    $("btnSell").addEventListener("click", async ()=>{
+      const symbol = $("tradeSymbol").value.trim().toUpperCase();
+      const lots = $("tradeLots").value.trim();
+      if(!symbol || !lots){
+        alert("请输入交易品种和数量");
+        return;
+      }
+      try {
+        const formData = new FormData();
+        formData.append("cmd_type", "MARKET");
+        formData.append("symbol", symbol);
+        formData.append("side", "SELL");
+        formData.append("lots", lots);
+
+        const resp = await fetch(API_BASE + "/send_command", {
+          method: "POST",
+          body: formData
+        });
+        if(resp.ok){
+          alert(`下单成功：做空 ${symbol} ${lots}手`);
+        } else {
+          alert("下单失败");
+        }
+      } catch(e){
+        alert("下单出错：" + e.message);
+      }
+    });
 
     // 初始化
     renderAll();
@@ -1981,7 +1907,6 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
     requestAnimationFrame(()=>{
       updateWheelUI(wheelCfg, state.pct);
       updateWheelUI(levWheelCfg, state.leverage);
-      renderPairList("");
     });
 
     // 启动定时轮询 MT4 数据（每 3 秒刷新一次）
