@@ -30,6 +30,27 @@ cmd_counter = 0
 paused = False
 pause_lock = threading.Lock()
 
+# ==================== 命令过期清理 ====================
+def cleanup_expired_commands():
+    """清理过期命令，防止积压"""
+    now = int(time.time())
+    with commands_lock:
+        original_len = len(commands)
+        valid = [c for c in commands if now - c.get("created_at", 0) < c.get("ttl_sec", 10)]
+        commands[:] = valid
+        removed = original_len - len(valid)
+        if removed > 0:
+            print(f"[CLEANUP] 清理了 {removed} 条过期命令，剩余 {len(commands)} 条")
+
+# 定时清理线程
+def cleanup_scheduler():
+    while True:
+        time.sleep(5)  # 每5秒检查一次
+        cleanup_expired_commands()
+
+cleanup_thread = threading.Thread(target=cleanup_scheduler, daemon=True)
+cleanup_thread.start()
+
 # ==================== 时间限制函数 ====================
 def is_restricted_time():
     """判断当前时间是否处于限制时段（0:30 - 4:30）"""
@@ -53,6 +74,7 @@ def norm_str(x):
     return str(x).strip()
 
 def norm_side(x):
+    """side 归一化：兼容 buy/sell/b/s/long/short"""
     s = norm_str(x).lower()
     if s in ("buy", "sell"):
         return s
@@ -61,6 +83,19 @@ def norm_side(x):
     if s in ("s", "short"):
         return "sell"
     return ""
+
+def norm_symbol(x):
+    """symbol 归一化：大写 + 去除空格"""
+    s = norm_str(x).strip().upper()
+    return s
+
+def norm_volume(x):
+    """volume 归一化：兼容 volume/lots/size"""
+    try:
+        v = float(x)
+        return v if v > 0 else 0
+    except (ValueError, TypeError):
+        return 0
 
 def get_client_ip():
     return request.headers.get('X-Real-Ip') or request.headers.get('X-Forwarded-For', request.remote_addr)
@@ -132,6 +167,8 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
         "balance": parsed_json.get("balance") if isinstance(parsed_json, dict) else None,
         "equity": parsed_json.get("equity") if isinstance(parsed_json, dict) else None,
         "floating_pnl": parsed_json.get("floating_pnl") if isinstance(parsed_json, dict) else None,
+        "exposure_notional": parsed_json.get("exposure_notional") if isinstance(parsed_json, dict) else None,
+        "positions": parsed_json.get("positions") if isinstance(parsed_json, dict) else None,
     }
 
     with history_lock:
@@ -154,14 +191,109 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
 def safe_num(x):
     return isinstance(x, (int, float))
 
-def auto_fill_status(parsed: dict):
+# ==================== 日内计算（UTC+8）====================
+# 存储每个账户的日初净值（UTC+8 0点刷新）
+day_start_equity_store = {}  # {account: (timestamp, equity)}
+
+def get_utc8_now():
+    """获取当前 UTC+8 时间戳（秒）"""
+    return int(time.time()) + 8 * 3600
+
+def is_utc8_new_day(last_ts, current_ts):
+    """判断 UTC+8 时间戳是否跨了一天"""
+    from datetime import datetime
+    def utc8_date(ts):
+        return datetime.utcfromtimestamp(ts + 8*3600).date()
+    return utc8_date(last_ts) != utc8_date(current_ts)
+
+def get_day_start_equity(account, current_equity):
+    """
+    获取日初净值（UTC+8 0点为界）
+    - 如果跨了新的一天，更新日初净值为当前净值
+    - 否则返回上次记录的日初净值
+    """
+    global day_start_equity_store
+    now = get_utc8_now()
+
+    if account not in day_start_equity_store:
+        # 首次记录
+        day_start_equity_store[account] = (now, current_equity)
+        return current_equity
+
+    last_ts, last_equity = day_start_equity_store[account]
+    if is_utc8_new_day(last_ts, now):
+        # 新的一天，重置日初净值为当前净值
+        day_start_equity_store[account] = (now, current_equity)
+        return current_equity
+
+    return last_equity
+
+def calc_exposure_notional(symbol, equity, position_pct, leverage, point_value):
+    """
+    计算 exposure_notional（每点收益影响）
+    symbol: 交易品种
+    equity: 当前净值
+    position_pct: 用户选择的仓位比例（0-100）
+    leverage: 杠杆倍数
+    point_value: 该品种每波动1点的资金影响（从EA获取）
+    
+    返回：每点波动对账户的盈亏金额
+    """
+    if not equity or equity <= 0:
+        return 0.0
+    
+    # 用户选择的仓位对应的资金量
+    position_value = equity * (position_pct / 100.0)
+    
+    # 理论手数 = 仓位资金 / (账户净值 × 杠杆) 
+    # 实际上：手数 = (equity × pct% × leverage) / 当前价格（简化计算）
+    # 简化：直接用 position_value × leverage 作为名义本金，再乘以 point_value
+    if leverage and leverage > 0:
+        # 名义本金 = 仓位资金 × 杠杆
+        notional = position_value * leverage
+    else:
+        notional = position_value
+    
+    # 每点收益 = 名义本金 × point_value（point_value 已单位化）
+    if point_value:
+        return notional * point_value
+    else:
+        return 0.0
+
+def calc_exposure_signal(margin_level, position_pct, leverage=1):
+    """
+    计算 exposure_signal 风控信号
+    margin_level: 保证金比例 %
+    position_pct: 仓位比例 0-100
+    leverage: 杠杆倍数
+    返回: "green", "yellow", "red"
+    """
+    if not margin_level or margin_level <= 0:
+        return "green"
+
+    # 计算有效杠杆 = margin_level * position_pct / 100
+    effective_leverage = margin_level * (position_pct / 100.0)
+
+    # 阈值判断（可配置）
+    YELLOW_THRESHOLD = 3.0   # 3 倍
+    RED_THRESHOLD = 5.0      # 5 倍
+
+    if effective_leverage >= RED_THRESHOLD:
+        return "red"
+    elif effective_leverage >= YELLOW_THRESHOLD:
+        return "yellow"
+    else:
+        return "green"
+
+def auto_fill_status(parsed: dict, positions=None, position_pct=0):
     """
     自动补齐 / 兜底计算：
     - margin_level = equity / margin * 100
     - floating_pnl 缺失 -> 0
-    - daily_pnl = daily_closed_pnl + floating_pnl
-    - daily_return = daily_pnl / day_start_equity
-    - exposure_notional / leverage_used 保持原样，若缺失则设为 None
+    - daily_pnl = equity - day_start_equity (UTC+8 0点为界)
+    - daily_return = daily_pnl / day_start_equity (%)
+    - exposure_notional: 用户选择仓位 * 杠杆 * 品种点值
+    - exposure_signal: green/yellow/red 风控灯
     - risk_flags 缺失 -> ""
     - metrics 缺失 -> 补全所有字段为 None 或 0（计数类为 0）
     - free_margin = equity - margin（如果两者都存在）
@@ -173,8 +305,9 @@ def auto_fill_status(parsed: dict):
     balance = parsed.get("balance")
     margin = parsed.get("margin")
     free_margin = parsed.get("free_margin")
+    account = parsed.get("account")
 
-    # floating_pnl：如果没给，就用 0（很多人希望这里别是 None）
+    # floating_pnl：如果没给，就用 0
     if parsed.get("floating_pnl") is None:
         parsed["floating_pnl"] = 0.0
 
@@ -185,39 +318,95 @@ def auto_fill_status(parsed: dict):
         else:
             parsed["margin_level"] = None
 
-    # daily_closed_pnl 默认 0
-    if parsed.get("daily_closed_pnl") is None:
-        parsed["daily_closed_pnl"] = 0.0
+    # ===== 日内计算（UTC+8 0点为界）=====
+    if account and safe_num(equity):
+        # 获取日初净值（UTC+8 0点刷新）
+        day_start_eq = get_day_start_equity(account, equity)
+        parsed["day_start_equity"] = day_start_eq
 
-    # daily_pnl：优先用传来的，否则用 daily_closed_pnl + floating_pnl
-    if parsed.get("daily_pnl") is None:
-        dcp = parsed.get("daily_closed_pnl")
-        fp = parsed.get("floating_pnl")
-        if safe_num(dcp) and safe_num(fp):
-            parsed["daily_pnl"] = dcp + fp
-        else:
-            parsed["daily_pnl"] = None
+        # 计算日内盈亏 = 当前净值 - 日初净值
+        daily_pnl = equity - day_start_eq
+        parsed["daily_pnl"] = daily_pnl
 
-    # daily_return：优先用传来的，否则 daily_pnl / day_start_equity
-    if parsed.get("daily_return") is None:
-        dse = parsed.get("day_start_equity")
-        dpnl = parsed.get("daily_pnl")
-        if safe_num(dse) and dse != 0 and safe_num(dpnl):
-            parsed["daily_return"] = dpnl / dse
+        # 日内收益率（转为百分比）
+        if day_start_eq and day_start_eq != 0:
+            parsed["daily_return"] = (daily_pnl / day_start_eq) * 100
         else:
             parsed["daily_return"] = None
+    else:
+        # 如果没有 account 或 equity，保持原有逻辑
+        if parsed.get("day_start_equity") is None:
+            parsed["day_start_equity"] = None
+        if parsed.get("daily_pnl") is None:
+            dcp = parsed.get("daily_closed_pnl", 0)
+            fp = parsed.get("floating_pnl", 0)
+            if safe_num(dcp) and safe_num(fp):
+                parsed["daily_pnl"] = dcp + fp
+            else:
+                parsed["daily_pnl"] = None
+        if parsed.get("daily_return") is None:
+            dse = parsed.get("day_start_equity")
+            dpnl = parsed.get("daily_pnl")
+            if safe_num(dse) and dse != 0 and safe_num(dpnl):
+                parsed["daily_return"] = (dpnl / dse) * 100
+            else:
+                parsed["daily_return"] = None
 
-    # exposure_notional / leverage_used：如果缺失就置 None（不乱算）
-    if parsed.get("exposure_notional") is None:
-        parsed["exposure_notional"] = None
-    if parsed.get("leverage_used") is None:
-        en = parsed.get("exposure_notional")
-        if safe_num(en) and safe_num(equity) and equity != 0:
-            parsed["leverage_used"] = en / equity
+    # ===== exposure_notional 计算 =====
+    # exposure_notional = 每点波动对账户的盈亏金额
+    # 计算公式：仓位资金 × 杠杆 × point_value
+    user_position_pct = position_pct if position_pct > 0 else parsed.get("position_pct", 0)
+
+    # 从 positions 获取 point_value（每个持仓品种的每点价值）
+    total_point_value = 0.0
+    if positions and isinstance(positions, list):
+        for pos in positions:
+            pv = pos.get("point_value", 0) or pos.get("point", 0)
+            lots = pos.get("lots", 0)
+            if pv and lots:
+                total_point_value += pv * lots
+
+    # 如果有持仓数据，计算基础 exposure
+    if positions and safe_num(equity) and equity > 0:
+        # 用户选择的仓位对应的资金量
+        position_value = equity * (user_position_pct / 100.0)
+        
+        # 默认杠杆（如果没有设置则使用 20）
+        leverage = parsed.get("leverage_used", 20) or 20
+        
+        # exposure_notional = 仓位资金 × 杠杆 × 每点价值
+        # 如果有持仓数据，使用持仓的 point_value；否则使用 0.01 近似
+        if total_point_value > 0:
+            exp_notional = position_value * leverage * total_point_value
+        else:
+            # 兜底：假设每点 = 账户的 0.01%
+            exp_notional = position_value * leverage * 0.0001
+        
+        parsed["exposure_notional"] = round(exp_notional, 2)
+        
+        # leverage_used = exposure_notional / equity (百分比)
+        if exp_notional and equity:
+            parsed["leverage_used"] = round((exp_notional / equity) * 100, 2)
         else:
             parsed["leverage_used"] = None
+    else:
+        if parsed.get("exposure_notional") is None:
+            parsed["exposure_notional"] = None
+        if parsed.get("leverage_used") is None:
+            en = parsed.get("exposure_notional")
+            if safe_num(en) and safe_num(equity) and equity != 0:
+                parsed["leverage_used"] = round((en / equity) * 100, 2)
+            else:
+                parsed["leverage_used"] = None
 
-    # risk_flags：你 EA 可能发 "LEVERAGE_HIGH;"，也可能小写；都保留
+    # ===== exposure_signal 风控灯 =====
+    margin_level = parsed.get("margin_level")
+    if margin_level and user_position_pct > 0:
+        parsed["exposure_signal"] = calc_exposure_signal(margin_level, user_position_pct)
+    else:
+        parsed["exposure_signal"] = "green"
+
+    # risk_flags
     if parsed.get("risk_flags") is None:
         parsed["risk_flags"] = ""
 
@@ -228,11 +417,10 @@ def auto_fill_status(parsed: dict):
         else:
             parsed["free_margin"] = None
 
-    # metrics：补齐结构，确保所有子字段存在
+    # metrics：补齐结构
     metrics = parsed.get("metrics")
     if not isinstance(metrics, dict):
         metrics = {}
-    # 定义所有 metrics 字段及其默认值（None 表示未知，0 表示计数）
     metric_fields = {
         "poll_latency_ms": None,
         "last_http_code": None,
@@ -241,23 +429,23 @@ def auto_fill_status(parsed: dict):
         "reports_sent_count": 0,
         "executed_commands": 0,
         "failed_commands": 0,
+        "position_pct": user_position_pct,
     }
     for k, default in metric_fields.items():
         if k not in metrics:
             metrics[k] = default
     parsed["metrics"] = metrics
 
-    # 保留原始数值字段（可能为 None）
+    # 保留原始数值字段
     parsed["balance"] = balance
     parsed["equity"] = equity
     parsed["margin"] = margin
-    # free_margin 可能已更新
     if parsed.get("free_margin") is None and free_margin is not None:
         parsed["free_margin"] = free_margin
 
     return parsed
 
-def extract_latest_details_from_status(record):
+def extract_latest_details_from_status(record, positions=None):
     """只用于 status 记录的详情提取 + 自动补齐"""
     if not record:
         return None
@@ -280,7 +468,12 @@ def extract_latest_details_from_status(record):
     if not isinstance(parsed, dict):
         return {**base_info, "error": "JSON 解析失败或不是对象"}
 
-    parsed = auto_fill_status(parsed)
+    # 优先使用传入的 positions 数据，否则尝试从 record 获取
+    if positions is None:
+        positions = record.get("positions")
+    
+    # 调用 auto_fill_status 传入 positions 用于计算 exposure
+    parsed = auto_fill_status(parsed, positions)
 
     metrics = parsed.get("metrics", {})
 
@@ -300,6 +493,7 @@ def extract_latest_details_from_status(record):
         "daily_pnl": parsed.get("daily_pnl"),
         "daily_return": parsed.get("daily_return"),
         "exposure_notional": parsed.get("exposure_notional"),
+        "exposure_signal": parsed.get("exposure_signal"),
         "leverage_used": parsed.get("leverage_used"),
         "risk_flags": parsed.get("risk_flags"),
         "poll_latency_ms": metrics.get("poll_latency_ms"),
@@ -309,6 +503,7 @@ def extract_latest_details_from_status(record):
         "reports_sent_count": metrics.get("reports_sent_count"),
         "executed_commands": metrics.get("executed_commands"),
         "failed_commands": metrics.get("failed_commands"),
+        "position_pct": metrics.get("position_pct", 0),
     }
 
 # ==================== 暂停控制接口 ====================
@@ -331,13 +526,40 @@ def api_status():
     with pause_lock:
         return jsonify({"paused": paused})
 
+# 网页端获取最新 MT4 状态数据（用于风控计算）
+@app.route("/api/latest_status", methods=["GET"])
+def api_latest_status():
+    with history_lock:
+        latest_status_record = history_status[0] if history_status else None
+        latest_positions_record = history_positions[0] if history_positions else None
+        
+        positions_data = None
+        if latest_positions_record:
+            positions_data = latest_positions_record.get("parsed", {}).get("positions", [])
+        
+        # 提取详情（含 exposure 计算）
+        detail = extract_latest_details_from_status(latest_status_record, positions_data)
+        
+        if detail:
+            return jsonify(detail)
+        else:
+            return jsonify({})
+
 # ==================== 主页 ====================
 @app.route("/")
 def index():
     with history_lock:
-        # 最新 status：只从 status 队列取
+        # 最新 status
         latest_status_record = history_status[0] if history_status else None
-        latest_detail = extract_latest_details_from_status(latest_status_record)
+        
+        # 最新 positions（用于计算 exposure）
+        latest_positions_record = history_positions[0] if history_positions else None
+        positions_data = None
+        if latest_positions_record:
+            positions_data = latest_positions_record.get("parsed", {}).get("positions", [])
+        
+        # 提取 status 详情并传入 positions 计算 exposure
+        latest_detail = extract_latest_details_from_status(latest_status_record, positions_data)
 
         # 展示表格：status 历史
         hist_list = list(reversed(history_status))
@@ -419,10 +641,22 @@ def mt4_commands():
         remaining_commands = []
         for cmd in commands:
             cmd_acc = cmd.get("account")
-            if cmd_acc is None or norm_str(cmd_acc) == account:
-                account_commands.append(cmd)
+            # 兼容逻辑：account 为 None 或空字符串时，允许匹配（或视为广播命令）
+            cmd_acc_normalized = norm_str(cmd_acc)
+            request_acc_normalized = norm_str(account)
+            
+            # 如果请求的 account 为空，则返回所有不指定 account 的命令
+            if request_acc_normalized == "":
+                if cmd_acc is None or cmd_acc_normalized == "":
+                    account_commands.append(cmd)
+                else:
+                    remaining_commands.append(cmd)
             else:
-                remaining_commands.append(cmd)
+                # 请求有 account：只返回匹配的或无 account 限制的命令
+                if cmd_acc is None or cmd_acc_normalized == "" or cmd_acc_normalized == request_acc_normalized:
+                    account_commands.append(cmd)
+                else:
+                    remaining_commands.append(cmd)
         commands[:] = remaining_commands
 
     print("[SEND CMDS]:", json.dumps(account_commands, ensure_ascii=False))
@@ -471,17 +705,29 @@ def send_command():
         return redirect(url_for("index"))
 
     global cmd_counter
-    account = norm_str(request.form.get("account", ""))
-    cmd_type = norm_str(request.form.get("cmd_type", "MARKET")).upper()
+    
+    # 使用归一化函数处理字段
+    account_raw = request.form.get("account", "")
+    cmd_type_raw = request.form.get("cmd_type", "MARKET")
+    symbol_raw = request.form.get("symbol", "")
+    side_raw = request.form.get("side", "")
+    volume_raw = request.form.get("volume", "")
+    price_raw = request.form.get("price", "")
+    sl_raw = request.form.get("sl", "")
+    tp_raw = request.form.get("tp", "")
+    ticket_raw = request.form.get("ticket", "")
+    lots_raw = request.form.get("lots", "")
 
-    symbol = norm_str(request.form.get("symbol", "")).upper()
-    side_ui = norm_str(request.form.get("side", "")).upper()
-    volume = norm_str(request.form.get("volume", ""))
-    price = norm_str(request.form.get("price", ""))
-    sl = norm_str(request.form.get("sl", ""))
-    tp = norm_str(request.form.get("tp", ""))
-    ticket = norm_str(request.form.get("ticket", ""))
-    lots = norm_str(request.form.get("lots", ""))
+    account = norm_str(account_raw)
+    cmd_type = norm_str(cmd_type_raw).upper()
+    symbol = norm_symbol(symbol_raw)
+    side_ui = norm_str(side_raw).upper()
+    volume = norm_volume(volume_raw)
+    sl = norm_volume(sl_raw) if sl_raw else None
+    tp = norm_volume(tp_raw) if tp_raw else None
+    ticket = norm_str(ticket_raw)
+    lots = norm_volume(lots_raw) if lots_raw else None
+    price = norm_volume(price_raw) if price_raw else None
 
     # 强校验
     if cmd_type in ("MARKET", "LIMIT"):
@@ -491,8 +737,8 @@ def send_command():
         if side_ui not in ("BUY", "SELL"):
             print("[BLOCK] side 无效:", side_ui)
             return redirect(url_for("index"))
-        if not volume:
-            print("[BLOCK] volume 为空")
+        if volume <= 0:
+            print("[BLOCK] volume 必须 > 0")
             return redirect(url_for("index"))
     elif cmd_type == "CLOSE":
         if not ticket:
@@ -501,43 +747,13 @@ def send_command():
     else:
         return redirect(url_for("index"))
 
-    try:
-        if cmd_type in ("MARKET", "LIMIT"):
-            volume_f = float(volume)
-            if volume_f <= 0:
-                print("[BLOCK] volume 必须 > 0")
-                return redirect(url_for("index"))
-            sl_f = float(sl) if sl else None
-            tp_f = float(tp) if tp else None
-        else:
-            volume_f = None
-            sl_f, tp_f = None, None
-
-        if cmd_type == "LIMIT":
-            price_f = float(price) if price else 0.0
-            if price_f <= 0:
-                print("[BLOCK] LIMIT price 必须 > 0")
-                return redirect(url_for("index"))
-        else:
-            price_f = None
-
-        if cmd_type == "CLOSE":
-            ticket_i = int(ticket)
-            lots_f = float(lots) if lots else 0.0
-        else:
-            ticket_i = None
-            lots_f = None
-    except ValueError:
-        print("[BLOCK] 数值转换失败")
-        return redirect(url_for("index"))
-
     # 若没填 account，则尝试从最新 status 获取
     if not account:
         with history_lock:
             if history_status and isinstance(history_status[0].get("parsed"), dict):
                 account = norm_str(history_status[0]["parsed"].get("account"))
 
-    # 命令对象
+    # 命令对象 - 关键：account 要么不传，要么传真实值，严禁传空字符串
     now = int(time.time())
     cmd = {
         "id": str(cmd_counter),
@@ -545,6 +761,8 @@ def send_command():
         "created_at": now,
         "ttl_sec": 10,
     }
+    
+    # 只有非空 account 才添加
     if account:
         cmd["account"] = account
 
@@ -552,26 +770,31 @@ def send_command():
         cmd["action"] = "market"
         cmd["symbol"] = symbol
         cmd["side"] = "buy" if side_ui == "BUY" else "sell"
-        cmd["volume"] = volume_f
-        if sl_f is not None:
-            cmd["sl_price"] = sl_f
-        if tp_f is not None:
-            cmd["tp_price"] = tp_f
+        cmd["volume"] = volume
+        # 兼容字段名
+        cmd["lots"] = volume
+        if sl is not None and sl > 0:
+            cmd["sl_price"] = sl
+            cmd["sl"] = sl
+        if tp is not None and tp > 0:
+            cmd["tp_price"] = tp
+            cmd["tp"] = tp
     elif cmd_type == "LIMIT":
         cmd["action"] = "limit"
         cmd["symbol"] = symbol
         cmd["side"] = "buy" if side_ui == "BUY" else "sell"
-        cmd["volume"] = volume_f
-        cmd["price"] = price_f
-        if sl_f is not None:
-            cmd["sl"] = sl_f
-        if tp_f is not None:
-            cmd["tp"] = tp_f
+        cmd["volume"] = volume
+        cmd["lots"] = volume
+        cmd["price"] = price
+        if sl is not None and sl > 0:
+            cmd["sl"] = sl
+        if tp is not None and tp > 0:
+            cmd["tp"] = tp
     elif cmd_type == "CLOSE":
         cmd["action"] = "close"
-        cmd["ticket"] = ticket_i
-        if lots_f and lots_f > 0:
-            cmd["lots"] = lots_f
+        cmd["ticket"] = int(ticket) if ticket else None
+        if lots and lots > 0:
+            cmd["lots"] = lots
 
     print("[ADD CMD]:", json.dumps(cmd, ensure_ascii=False))
 
