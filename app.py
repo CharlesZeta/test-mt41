@@ -605,6 +605,7 @@ def index():
         HTML_TEMPLATE,
         history=hist_list,
         poll_history=poll_list,
+        history_positions=history_positions,
         latest=latest_detail,
         latest_raw=latest_status_record,
         commands=cmds_copy,
@@ -1008,6 +1009,47 @@ HTML_TEMPLATE = r"""
     </div>
   </div>
 
+  <!-- 持仓展示区域 -->
+  {% if latest_detail and latest_detail.positions %}
+  <div class="card shadow-sm mb-4">
+    <div class="card-header bg-primary text-white">
+      <i class="bi bi-collection"></i> 当前持仓 ( {{ latest_detail.positions|length }} )
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-striped table-hover mb-0">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>品种</th>
+              <th>方向</th>
+              <th>手数</th>
+              <th>开仓价</th>
+              <th>当前价</th>
+              <th>浮动盈亏</th>
+              <th>保证金</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for pos in latest_detail.positions %}
+            <tr>
+              <td>{{ pos.ticket }}</td>
+              <td>{{ pos.symbol }}</td>
+              <td><span class="badge bg-{{ 'success' if pos.side == 'buy' else 'danger' }}">{{ pos.side }}</span></td>
+              <td>{{ "%.2f"|format(pos.lots) if pos.lots is number else pos.lots }}</td>
+              <td>{{ "%.5f"|format(pos.open_price) if pos.open_price is number else pos.open_price }}</td>
+              <td>{{ "%.5f"|format(pos.current_price) if pos.current_price is number else pos.current_price }}</td>
+              <td style="color: {{ 'green' if pos.profit > 0 else 'red' }}">{{ "%.2f"|format(pos.profit) if pos.profit is number else pos.profit }}</td>
+              <td>{{ "%.2f"|format(pos.margin) if pos.margin is number else pos.margin }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="row">
     <!-- 左：status 历史 -->
     <div class="col-lg-7 mb-4">
@@ -1090,6 +1132,41 @@ HTML_TEMPLATE = r"""
         </div>
       </div>
 
+    </div>
+
+    <!-- 持仓历史 -->
+    <div class="card shadow-sm mt-3">
+      <div class="card-header bg-info text-white">
+        <i class="bi bi-clock-history"></i> 持仓上报历史(positions) 
+        <small class="text-white-50 ms-2">记录来自 /web/api/mt4/positions</small>
+      </div>
+      <div class="card-body p-0">
+        {% set positions_history = history_positions[:5] %}
+        {% if positions_history %}
+          {% for rec in positions_history %}
+          <div class="border-bottom p-2">
+            <small class="text-muted">{{ rec.received_at }} ({{ rec.ip }})</small>
+            <div class="mt-1">
+              {% set positions = rec.parsed.positions if rec.parsed else [] %}
+              {% if positions %}
+                {% for pos in positions[:3] %}
+                <span class="badge bg-{{ 'success' if pos.side == 'buy' else 'danger' }} me-1">
+                  {{ pos.symbol }} {{ pos.lots }}手
+                </span>
+                {% endfor %}
+                {% if positions|length > 3 %}
+                <small class="text-muted">...等{{ positions|length }}个</small>
+                {% endif %}
+              {% else %}
+                <small class="text-muted">无持仓</small>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="p-3 text-center text-muted">暂无 positions 上报数据</div>
+        {% endif %}
+      </div>
     </div>
 
     <!-- 右：命令队列+发单 -->
