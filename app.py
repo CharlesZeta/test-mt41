@@ -594,6 +594,9 @@ def index():
         # poll 请求历史（用于调试）
         poll_list = list(reversed(history_poll))
 
+        # positions 上报历史
+        positions_list = list(reversed(history_positions))
+
     with commands_lock:
         cmds_copy = commands.copy()
     with pause_lock:
@@ -605,7 +608,7 @@ def index():
         HTML_TEMPLATE,
         history=hist_list,
         poll_history=poll_list,
-        history_positions=history_positions,
+        history_positions=positions_list,
         latest=latest_detail,
         latest_raw=latest_status_record,
         commands=cmds_copy,
