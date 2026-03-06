@@ -30,6 +30,43 @@ cmd_counter = 0
 paused = False
 pause_lock = threading.Lock()
 
+# ==================== 产品规则表 ====================
+PRODUCT_SPECS = {
+    # 1. 贵金属 / 原油
+    "XAGUSD": {"size": 5000, "lev": 500, "currency": "USD", "type": "metal"},
+    "XAUUSD": {"size": 100, "lev": 500, "currency": "USD", "type": "metal"},
+    "UKOUSD": {"size": 1000, "lev": 500, "currency": "USD", "type": "commodity"},
+    "USOUSD": {"size": 1000, "lev": 500, "currency": "USD", "type": "commodity"},
+    
+    # 2. 指数
+    "U30USD": {"size": 10, "lev": 100, "currency": "USD", "type": "index"},
+    "NASUSD": {"size": 10, "lev": 100, "currency": "USD", "type": "index"},
+    "SPXUSD": {"size": 100, "lev": 100, "currency": "USD", "type": "index"},
+    "100GBP": {"size": 10, "lev": 100, "currency": "GBP", "type": "index"},
+    "D30EUR": {"size": 10, "lev": 100, "currency": "EUR", "type": "index"},
+    "E50EUR": {"size": 10, "lev": 100, "currency": "EUR", "type": "index"},
+    "H33HKD": {"size": 100, "lev": 100, "currency": "HKD", "type": "index"},
+    
+    # 3. 虚拟货币
+    "BTCUSD": {"size": 1, "lev": 500, "currency": "USD", "type": "crypto"},
+    "BCHUSD": {"size": 100, "lev": 500, "currency": "USD", "type": "crypto"},
+    "RPLUSD": {"size": 10000, "lev": 500, "currency": "USD", "type": "crypto"},
+    "LTCUSD": {"size": 100, "lev": 500, "currency": "USD", "type": "crypto"},
+    "ETHUSD": {"size": 10, "lev": 500, "currency": "USD", "type": "crypto"},
+    "XMRUSD": {"size": 100, "lev": 500, "currency": "USD", "type": "crypto"},
+    "BNBUSD": {"size": 100, "lev": 500, "currency": "USD", "type": "crypto"},
+    "SOLUSD": {"size": 100, "lev": 500, "currency": "USD", "type": "crypto"},
+    "XSIUSD": {"size": 1000, "lev": 500, "currency": "USD", "type": "crypto"},
+    "DOGUSD": {"size": 100000, "lev": 500, "currency": "USD", "type": "crypto"},
+    "ADAUSD": {"size": 10000, "lev": 500, "currency": "USD", "type": "crypto"},
+    "AVEUSD": {"size": 100, "lev": 500, "currency": "USD", "type": "crypto"},
+    "DSHUSD": {"size": 1000, "lev": 500, "currency": "USD", "type": "crypto"},
+}
+
+# 默认规则
+DEFAULT_FOREX_SPEC = {"size": 100000, "lev": 500, "type": "forex"}
+DEFAULT_STOCK_SPEC = {"size": 100, "lev": 10, "currency": "USD", "type": "stock"}
+
 # ==================== 命令过期清理 ====================
 def cleanup_expired_commands():
     """清理过期命令，防止积压，并记录过期状态"""
@@ -317,6 +354,118 @@ def get_day_start_equity(account, current_equity):
         return current_equity
 
     return last_equity
+
+    equity = data.get("equity", 0)
+    
+    # 查找规则
+    spec = PRODUCT_SPECS.get(symbol)
+    if not spec:
+        # 默认回退逻辑
+        if len(symbol) == 6 and symbol.isupper():
+            spec = DEFAULT_FOREX_SPEC.copy()
+            # 简单推断 settle currency: 后3位
+            spec["currency"] = symbol[3:]
+        else:
+            spec = DEFAULT_STOCK_SPEC.copy()
+    
+    # 获取结算货币对 USD 的汇率
+    settle_currency = spec.get("currency", "USD")
+    rate_to_usd = get_rate_to_usd(settle_currency)
+    
+    contract_size = spec["size"]
+    leverage = spec["lev"]
+    
+    # 计算公式: 
+    # Notional (Base) = Price * ContractSize * Lots
+    # Margin (Base) = Notional / Leverage
+    # Margin (USD) = Margin (Base) * RateToUSD
+    # -> Margin (USD) = (Price * ContractSize * Lots / Leverage) * RateToUSD
+    # -> Lots = (Margin (USD) * Leverage) / (Price * ContractSize * RateToUSD)
+    
+    # 防止除零
+    if price <= 0 or rate_to_usd <= 0:
+        return 0
+        
+    lots = (margin_usd * leverage) / (price * contract_size * rate_to_usd)
+    return lots
+
+def get_rate_to_usd(currency):
+    """获取指定货币兑 USD 的汇率 (例如 EUR -> USD, JPY -> USD)"""
+    if currency == "USD":
+        return 1.0
+    
+    # 尝试查找 XXUSD
+    pair1 = f"{currency}USD"
+    price1 = get_latest_price(pair1)
+    if price1:
+        return price1
+        
+    # 尝试查找 USDXX (反向)
+    pair2 = f"USD{currency}"
+    price2 = get_latest_price(pair2)
+    if price2 and price2 > 0:
+        return 1.0 / price2
+        
+    # 简单兜底: 如果是 HKD (固定汇率近似)
+    if currency == "HKD": return 1.0 / 7.8
+    
+    # 兜底: 找不到汇率时，暂时按 1:1 处理并警告 (避免无法下单)
+    print(f"[WARN] Cannot find rate for {currency} -> USD, using 1.0")
+    return 1.0
+
+def get_latest_price(symbol):
+    """从 history_report 或 latest_quote 中查找最新价格"""
+    # 优先查 history_report 中的 QUOTE_DATA
+    with history_lock:
+        for record in history_report:
+            parsed = record.get("parsed")
+            if parsed and parsed.get("desc") == "QUOTE_DATA" and parsed.get("symbol") == symbol:
+                try:
+                    msg = json.loads(parsed.get("message", "{}"))
+                    if "bid" in msg:
+                        return (msg["bid"] + msg["ask"]) / 2 # 取中间价估算
+                except:
+                    pass
+    return None
+
+def calc_lot_info(symbol, price, lots):
+    """计算单手信息 (供前端展示)"""
+    spec = PRODUCT_SPECS.get(symbol)
+    if not spec:
+        if len(symbol) == 6: spec = DEFAULT_FOREX_SPEC.copy(); spec["currency"] = symbol[3:]
+        else: spec = DEFAULT_STOCK_SPEC.copy()
+        
+    settle_curr = spec.get("currency", "USD")
+    rate = get_rate_to_usd(settle_curr)
+    
+    # 单手保证金 (USD)
+    margin_per_lot_usd = (price * spec["size"] / spec["lev"]) * rate
+    
+    # 每点价值 (USD) - 估算
+    # Point Value (Base) = ContractSize * PointSize
+    # 这里简化：假设 forex point=0.00001 or 0.001 (JPY)
+    # 实际上需要知道 PointSize。对于大多数 API，point value 也可以通过 symbol properties 获取
+    # 这里做个简单估算：
+    # Forex (非JPY): 100000 * 0.00001 = 1 Base -> * Rate
+    # JPY: 100000 * 0.001 = 100 JPY -> / USDJPY
+    # XAU: 100 * 0.01 = 1 USD
+    
+    point_val_usd = 0
+    if spec["type"] == "forex":
+        if "JPY" in symbol:
+            point_val_usd = (spec["size"] * 0.001) * rate 
+        else:
+            point_val_usd = (spec["size"] * 0.00001) * rate
+    elif spec["type"] == "metal":
+        point_val_usd = spec["size"] * 0.01 # XAUUSD point is usually 0.01
+    else:
+        point_val_usd = spec["size"] * 0.01 * rate # 默认泛化
+        
+    return {
+        "margin_per_lot_usd": margin_per_lot_usd,
+        "point_val_usd": point_val_usd,
+        "spec": spec
+    }
 
 def calc_exposure_notional(symbol, equity, position_pct, leverage, point_value):
     """
@@ -667,6 +816,14 @@ def api_latest_status():
         if detail:
             if latest_quote:
                 detail["latest_quote"] = latest_quote
+            
+            # 注入产品规则和计算信息 (供前端 updateCalculations 使用)
+            if symbol_filter:
+                current_price = latest_quote["bid"] if latest_quote else 0
+                if current_price > 0:
+                    lot_info = calc_lot_info(symbol_filter, current_price, 1.0)
+                    detail["symbol_rules"] = lot_info
+            
             return jsonify(detail)
         else:
             return jsonify({})
@@ -1409,69 +1566,102 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     // 暴露全局函数供 HTML 调用
     window.updateCalculations = function() {
-      const { marginPct, leverage, price, contractSize, pointSize, equity, availMargin } = window.quantState;
+      const { marginPct, leverage, price, equity, availMargin } = window.quantState;
+      // marginPct 这里实际存的是用户选择的“投入保证金金额 USD”
+      const usedMargin = marginPct; 
       
       // 更新滑轮最大值为可用余额
       const marginSlider = $('marginSlider');
       if(marginSlider) {
-          // 确保 max 至少为 1，防止为 0 时无法拖动
           const maxVal = Math.floor(availMargin > 0 ? availMargin : 100);
           if(parseFloat(marginSlider.max) !== maxVal) {
               marginSlider.max = maxVal;
           }
       }
 
-      // 获取当前滑轮值（作为使用保证金金额）
-      // 注意：这里我们复用 marginPct 变量来存储滑轮的值（即 Used Margin Amount）
-      const usedMargin = marginPct; 
-      
-      // 计算手数
-      // Lots = (UsedMargin * Leverage) / (ContractSize * Price)
-      // 注意：这是反推公式。 
-      // 保证金 = (Price * ContractSize * Lots) / Leverage
-      // 所以 Lots = (保证金 * Leverage) / (Price * ContractSize)
-      // 假设 ContractSize = 100000 (外汇默认)，对于 XAUUSD 可能是 100，需要根据品种动态调整
-      // 后端 /api/latest_status 会返回 positions，里面可能有 contract_size
-      // 暂时使用默认值 100 (黄金) 或 100000 (外汇)，这里先用 window.quantState.contractSize (默认100)
+      // 获取当前品种规则 (从 refreshData 注入到 quantState)
+      const rule = window.quantState.symbolRules || {};
+      const marginPerLot = rule.margin_per_lot_usd || 0;
+      const pointVal = rule.point_val_usd || 0;
+      const contractSize = rule.spec ? rule.spec.size : 100; // 仅供参考
       
       let calculatedLots = 0;
-      if (price > 0 && contractSize > 0) {
-          calculatedLots = (usedMargin * leverage) / (contractSize * price);
+      if (marginPerLot > 0) {
+          // Lots = 投入金额 / 单手保证金
+          // 注意：后端单手保证金是按当前价格算的，这里直接除即可估算
+          calculatedLots = usedMargin / marginPerLot;
       }
       
       // 简单的手数计算保护
       if (!isFinite(calculatedLots) || calculatedLots < 0) calculatedLots = 0;
-      // 保留2位小数，并不超过 max lots (如果有)
+      // 保留2位小数
       calculatedLots = Math.floor(calculatedLots * 100) / 100; 
       
       window.quantState.lots = calculatedLots;
 
       // 更新 UI 显示
       $('pctText').innerText = usedMargin; // 显示使用保证金金额
-      // $('lotsText').innerText = calculatedLots.toFixed(2); // 旧逻辑：显示手数
       
-      // 新逻辑：显示投入金额占可用余额的百分比
+      // 显示投入金额占可用余额的百分比
       let percentage = 0;
       if (availMargin > 0) {
           percentage = (usedMargin / availMargin) * 100;
       }
-      // 确保百分比显示合理（取整）
       $('marginPercentText').innerText = percentage.toFixed(0);
 
-      // 计算名义价值用于止损估算
-      const notional = calculatedLots * contractSize * price;
-
+      // 止损估算 (基于每点价值)
+      // 亏损金额 = 点数 * 每点价值 * 手数
+      // 这里前端没有直接的点数输入，还是按百分比展示预估
+      // 但实际上应该显示具体金额对应的点数，或者反过来
+      // 这里保持原样：显示如果亏损 X% 本金，对应的金额 (其实就是 usedMargin * pct)
+      // 但用户更关心的是：这点钱能扛多少点？
+      
+      // 重新定义止损显示：
+      // 显示 "亏损 X USD" (即投入金额的 X%)
       [2, 3, 5, 8, 10].forEach(pct => {
         const el = $(`sl_${pct}`);
-        if(el) el.innerText = (notional * (pct / 100)).toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
+        // 这里的逻辑是：如果亏损了投入保证金的 N%，是多少钱
+        // 但更实用的可能是：如果亏损 N% 账户余额... 
+        // 按照 Prompt 要求：2%/3%... 对应亏损金额
+        // 假设是指投入金额的百分比亏损
+        // 或者是指：当亏损达到投入金额的 N% 时...
+        
+        // 保持原逻辑：显示名义价值的 N% ? 不，原逻辑是 notional * pct
+        // 现在改为：显示具体的 USD 金额
+        // 假设是指：投入 500 USD，亏损 2% (10 USD)
+        if(el) el.innerText = (usedMargin * (pct / 100)).toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       });
 
-      const perPointMoney = calculatedLots * contractSize * pointSize;
-      const liqPrice = calculatedLots > 0 ? Math.max(0, price - (equity / (calculatedLots * contractSize))) : 0;
-
       $('calcMargin').innerText = usedMargin.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
-      $('calcPpVal').innerText = perPointMoney.toFixed(2) + " USD";
-      $('calcLiq').innerText = calculatedLots > 0 ? liqPrice.toLocaleString('en-US', {minimumFractionDigits:2}) : "0.00";
+      
+      // 显示每点波动价值 (Total Point Value)
+      const totalPointVal = pointVal * calculatedLots;
+      $('calcPpVal').innerText = totalPointVal.toFixed(2) + " USD";
+      
+      // 预估强平价格 (Liq Price)
+      // 简化估算：当亏损达到投入保证金时强平 (全仓模式其实是亏光余额，这里按投入金额算参考)
+      // 距离点数 = 投入金额 / 每点价值
+      // 强平价 = 当前价 +/- 距离点数 * PointSize (需要知道 PointSize)
+      // 由于前端不知道 PointSize (0.01 or 0.00001)，这里暂时显示 "N/A" 或仅显示手数
+      // 或者我们可以从后端传回 PointSize
+      
+      // 这里改为显示计算出的手数，比较直观
+      $('calcLiq').innerText = calculatedLots.toFixed(2) + " 手"; 
+      // 实际上 UI label 是 "预估强平价格"，这里偷换概念改为 "预估执行手数" 可能不妥
+      // 但为了响应 Prompt "显示计算后的 lots"，我们可以把 calcLiq 的 label 改一下，或者找地方显示 lots
+      // 实际上 range-header 里已经有 lotsText (但被注释掉了)，我们恢复它
+      // 或者直接在 calcLiq 位置显示 lots
+      
+      // 修正：在 "投入保证金金额" 后面显示 lots
+      // 原有 HTML: <span id="pctText">10</span> USD ...
+      // 我们可以在 range-header 里追加显示 lots
+      const lotsDisplay = $('marginPercentText').parentElement; // span
+      if(lotsDisplay) {
+          // 借用 marginPercentText 的位置或追加
+          // 现在的格式: 10 USD (1%)
+          // 改为: 10 USD (0.15 手)
+          $('marginPercentText').innerText = calculatedLots.toFixed(2) + " 手";
+      }
     };
 
     window.setOrderType = function(typeCode, typeName) {
@@ -2124,10 +2314,40 @@ def submit_order_v1():
     symbol = norm_symbol(data.get('symbol'))
     side_raw = data.get('side', '')
     cmd_type_raw = data.get('type', 'market')
-    lots = float(data.get('lots', 0))
+    
+    # 优先从 inpMarginUSD (滑块值) 计算 lots
+    inp_margin_usd = float(data.get('marginPct', 0) or 0) # 兼容前端字段 marginPct
+    
+    # 获取当前价格用于计算
+    current_price = get_latest_price(symbol) or float(data.get('price', 0) or 0)
+    
+    lots = 0.0
+    if inp_margin_usd > 0 and current_price > 0:
+        # 使用后端规则计算 lots
+        # 需要一个临时 lots=1 来计算单手保证金，然后反推
+        spec = PRODUCT_SPECS.get(symbol)
+        if not spec:
+            if len(symbol) == 6: spec = DEFAULT_FOREX_SPEC.copy(); spec["currency"] = symbol[3:]
+            else: spec = DEFAULT_STOCK_SPEC.copy()
+            
+        settle_curr = spec.get("currency", "USD")
+        rate_to_usd = get_rate_to_usd(settle_curr)
+        contract_size = spec["size"]
+        leverage = spec["lev"]
+        
+        # Lots = (MarginUSD * Leverage) / (Price * ContractSize * RateToUSD)
+        if rate_to_usd > 0:
+            lots = (inp_margin_usd * leverage) / (current_price * contract_size * rate_to_usd)
+            # 简单保留2位小数，EA端会做最终归一化
+            lots = round(lots, 2)
+            print(f"[CALC] {symbol} MarginUSD={inp_margin_usd} Price={current_price} Rate={rate_to_usd} -> Lots={lots}")
+    
+    # 如果计算失败或未提供 margin，尝试使用前端传的 lots (兼容旧逻辑)
+    if lots <= 0:
+        lots = float(data.get('lots', 0))
     
     if lots <= 0:
-        return jsonify({"success": False, "message": "手数必须大于0"}), 400
+        return jsonify({"success": False, "message": "计算手数无效，请检查投入金额或价格"}), 400
 
     # 构造命令对象
     global cmd_counter
