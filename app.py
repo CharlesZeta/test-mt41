@@ -857,7 +857,8 @@ def api_history_trades():
         trades = []
         for record in list(history_report)[:limit]:
             parsed = record.get("parsed", {})
-            if parsed:
+            # 过滤掉报价数据，只返回真正的交易报告
+            if parsed and parsed.get("desc") != "QUOTE_DATA":
                 trades.append({
                     "received_at": record.get("received_at"),
                     "cmd_id": parsed.get("cmd_id"),
@@ -1620,8 +1621,15 @@ HTML_TEMPLATE = r"""<!doctype html>
       
       // 简单的手数计算保护
       if (!isFinite(calculatedLots) || calculatedLots < 0) calculatedLots = 0;
-      // 保留2位小数
-      calculatedLots = Math.floor(calculatedLots * 100) / 100; 
+      
+      // [修复]：不再向下取整，改为保留2位小数，且有最小兜底
+      // 如果算出来大于0但小于0.01，强制给0.01，让用户能尝试下单
+      if (calculatedLots > 0 && calculatedLots < 0.01) {
+          calculatedLots = 0.01;
+      } else {
+          // 使用 round 而不是 floor，避免 0.009 被截断
+          calculatedLots = Math.round(calculatedLots * 100) / 100;
+      }
       
       window.quantState.lots = calculatedLots;
 
@@ -1873,7 +1881,8 @@ HTML_TEMPLATE = r"""<!doctype html>
     };
 
     window.onload = () => {
-      window.setOrderType('limit_tpsl', '限价止盈止损');
+      // 默认使用市价单，避免用户不填价格导致拒单
+      window.setOrderType('market', '市价');
       const marginSlider = $('marginSlider');
       if(marginSlider) {
         // 初始化 max
@@ -2383,8 +2392,13 @@ def submit_order_v1():
         # 注意：这里构造一个伪造的 data 对象传给计算函数，因为它只需要 equity (可选) 和查价格
         # 实际上 calc_lots_from_margin_usd 内部会再次查价格
         lots = calc_lots_from_margin_usd(symbol, inp_margin_usd, {"equity": 0})
-        # 简单保留2位小数，EA端会做最终归一化
-        lots = round(lots, 2)
+        
+        # [修复]：如果算出来太小，尝试给个最小量（配合前端）
+        # 或者至少不要 round 成 0.0
+        if 0 < lots < 0.01:
+            lots = 0.01
+        else:
+            lots = round(lots, 2)
     
     # 如果计算失败或未提供 margin，尝试使用前端传的 lots (兼容旧逻辑)
     if lots <= 0:
