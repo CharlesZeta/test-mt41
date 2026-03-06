@@ -716,12 +716,15 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     /* 行情头 */
     .symRow { 
-      display: flex; align-items: center; justify-content: space-between; 
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
       margin-bottom: 1.25rem; background: var(--card); padding: 1.25rem; 
       border-radius: var(--radius); box-shadow: var(--shadow); 
       border: 1px solid var(--line); 
     }
-    .symLeft { display: flex; flex-direction: column; gap: 0.25rem; }
+    .symLeftTime { font-family: monospace; font-weight: 700; color: var(--muted); font-size: 0.875rem; justify-self: start; }
+    .symCenter { display: flex; flex-direction: column; align-items: center; justify-self: center; gap: 0.25rem; }
     .symName { display: flex; align-items: center; gap: 0.625rem; font-size: 1.625rem; font-weight: 800; }
     .symBadge { 
       font-size: 0.875rem; padding: 0.25rem 0.5rem; 
@@ -729,7 +732,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       font-weight: 700; min-height: 2rem; display: inline-flex; align-items: center;
       cursor: pointer;
     }
-    .symRight { display: flex; align-items: center; }
+    .symRight { display: flex; align-items: center; justify-self: end; }
     .iconBtn.huge-chart { 
       width: 5rem; height: 5rem; border-radius: 1rem; 
       border: 2px solid var(--line); background: #fff; 
@@ -987,7 +990,8 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
 
     <div class="symRow">
-      <div class="symLeft">
+      <div class="symLeftTime" id="sysTime">--:--:--</div>
+      <div class="symCenter">
         <div class="symName">
           <span id="symName">XAUUSD</span>
           <span class="symBadge" onclick="$('pairMask').style.display='flex'">切换品种 ▼</span>
@@ -1651,6 +1655,17 @@ HTML_TEMPLATE = r"""<!doctype html>
     
     // 自动刷新数据
     async function refreshData() {
+        // 更新系统时间
+        const now = new Date();
+        const timeStr = now.getFullYear() + '-' +
+            String(now.getMonth()+1).padStart(2, '0') + '-' +
+            String(now.getDate()).padStart(2, '0') + ' ' +
+            String(now.getHours()).padStart(2, '0') + ':' +
+            String(now.getMinutes()).padStart(2, '0') + ':' +
+            String(now.getSeconds()).padStart(2, '0');
+        const timeEl = $('sysTime');
+        if(timeEl) timeEl.innerText = timeStr;
+
         // 记录性能开始时间
         const startTime = performance.now();
         
