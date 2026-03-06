@@ -355,7 +355,13 @@ def get_day_start_equity(account, current_equity):
 
     return last_equity
 
+def calc_lots_from_margin_usd(symbol, margin_usd, data):
+    """根据投入保证金金额(USD)计算手数"""
     equity = data.get("equity", 0)
+    # 获取最新价格
+    price = get_latest_price(symbol)
+    if not price or price <= 0:
+        return 0.0
     
     # 查找规则
     spec = PRODUCT_SPECS.get(symbol)
@@ -384,7 +390,7 @@ def get_day_start_equity(account, current_equity):
     
     # 防止除零
     if price <= 0 or rate_to_usd <= 0:
-        return 0
+        return 0.0
         
     lots = (margin_usd * leverage) / (price * contract_size * rate_to_usd)
     return lots
@@ -416,6 +422,9 @@ def get_rate_to_usd(currency):
 def get_latest_price(symbol):
     """从 history_report 或 latest_quote 中查找最新价格"""
     # 优先查 history_report 中的 QUOTE_DATA
+    # 注意：此函数如果在 with history_lock 内部调用是安全的（锁可重入）
+    # 但如果是跨线程或在非锁环境下调用，建议调用方自己管理锁
+    # 这里加锁是为了安全，RLock 允许同一线程多次获取
     with history_lock:
         for record in history_report:
             parsed = record.get("parsed")
@@ -771,25 +780,25 @@ def api_status():
 @app.route("/api/latest_status", methods=["GET"])
 def api_latest_status():
     symbol_filter = request.args.get("symbol", "").upper()
+    print(f"[LATEST_STATUS] enter symbol={symbol_filter}")
+    
+    # 1. 在锁内提取所有需要的数据，避免锁竞争和死锁风险
+    detail = None
+    latest_quote = None
+    current_price = 0
     
     with history_lock:
         latest_status_record = history_status[0] if history_status else None
         latest_positions_record = history_positions[0] if history_positions else None
         
         # 查找最新的 QUOTE_DATA 报告
-        latest_quote = None
         for record in history_report:
             parsed = record.get("parsed")
-            # 兼容新旧逻辑：检查 parsed["symbol"] 或 message 内的 symbol
-            # 优先匹配 symbol 参数
             if parsed and parsed.get("desc") == "QUOTE_DATA":
                 record_symbol = parsed.get("symbol", "")
                 
-                # 如果没有 symbol 字段，尝试从 message 解析（旧版 EA 可能没传 symbol）
-                # 但如果是新版 EA，PostMarketSnapshot 应该已经传了 symbol
-                
                 if symbol_filter and record_symbol and record_symbol != symbol_filter:
-                    continue # 符号不匹配，跳过
+                    continue 
                 
                 try:
                     msg = parsed.get("message", "{}")
@@ -802,7 +811,10 @@ def api_latest_status():
                             "ts": parsed.get("ts"),
                             "symbol": record_symbol
                         }
-                        break # 找到最新的就 break
+                        # 记录当前价格供后续计算
+                        current_price = latest_quote["bid"]
+                        print(f"[LATEST_STATUS] quote found symbol={record_symbol} bid={latest_quote['bid']}")
+                        break 
                 except:
                     continue
 
@@ -810,23 +822,26 @@ def api_latest_status():
         if latest_positions_record:
             positions_data = latest_positions_record.get("parsed", {}).get("positions", [])
         
-        # 提取详情（含 exposure 计算）
+        # 提取详情
         detail = extract_latest_details_from_status(latest_status_record, positions_data)
         
-        if detail:
-            if latest_quote:
-                detail["latest_quote"] = latest_quote
-            
-            # 注入产品规则和计算信息 (供前端 updateCalculations 使用)
-            if symbol_filter:
-                current_price = latest_quote["bid"] if latest_quote else 0
-                if current_price > 0:
-                    lot_info = calc_lot_info(symbol_filter, current_price, 1.0)
-                    detail["symbol_rules"] = lot_info
-            
-            return jsonify(detail)
-        else:
-            return jsonify({})
+    # 2. 锁已释放，执行计算逻辑
+    if detail:
+        if latest_quote:
+            detail["latest_quote"] = latest_quote
+        
+        # 注入产品规则和计算信息
+        if symbol_filter and current_price > 0:
+            # calc_lot_info 内部会调用 get_rate_to_usd -> get_latest_price，后者会再次获取 history_lock
+            # 由于已释放外层锁，这里是安全的
+            lot_info = calc_lot_info(symbol_filter, current_price, 1.0)
+            detail["symbol_rules"] = lot_info
+            print(f"[LATEST_STATUS] symbol_rules loaded symbol={symbol_filter} margin_per_lot={lot_info.get('margin_per_lot_usd')}")
+        
+        print(f"[LATEST_STATUS] response ok symbol={symbol_filter}")
+        return jsonify(detail)
+    else:
+        return jsonify({})
 
 # 网页端获取历史成交记录
 @app.route("/api/history_trades", methods=["GET"])
@@ -2019,6 +2034,7 @@ HTML_TEMPLATE = r"""<!doctype html>
             // 获取当前选中的品种
             const currentSym = $('symName').innerText;
             // 修复：添加 symbol 参数，确保后端只返回该品种的最新报价
+            console.log(`[Frontend] request latest_status symbol=${currentSym}`);
             const res = await fetch(`/api/latest_status?symbol=${currentSym}`);
             
             if(!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -2027,9 +2043,17 @@ HTML_TEMPLATE = r"""<!doctype html>
             
             // 记录性能结束时间并打印日志 (性能监控)
             const endTime = performance.now();
-            console.log(`[Perf] RefreshData took ${(endTime - startTime).toFixed(2)}ms`);
+            // console.log(`[Perf] RefreshData took ${(endTime - startTime).toFixed(2)}ms`);
 
             if(data) {
+                // 注入 symbol_rules (重要)
+                if (data.symbol_rules) {
+                    window.quantState.symbolRules = data.symbol_rules;
+                    // console.log("[Frontend] symbol_rules loaded", data.symbol_rules);
+                } else {
+                    console.warn("[Frontend] symbol_rules missing in response");
+                }
+
                 // 更新账户数据
                 const equity = data.equity || 0;
                 const freeMargin = data.free_margin || 0;
@@ -2310,11 +2334,40 @@ def submit_order_v1():
 
     data = request.json
     print(f"【API】收到下单请求: {data}")
+    print(f"[ORDER] recv data={json.dumps(data)}")
     
     symbol = norm_symbol(data.get('symbol'))
     side_raw = data.get('side', '')
     cmd_type_raw = data.get('type', 'market')
     
+    # 优先放行 QUOTE 命令，无需计算 lots
+    if side_raw == 'QUOTE' or cmd_type_raw == 'quote':
+        print(f"[ORDER][QUOTE] accepted symbol={symbol}")
+        # 构造简单命令对象
+        global cmd_counter
+        now = int(time.time())
+        cmd = {
+            "id": str(cmd_counter),
+            "nonce": generate_nonce(),
+            "created_at": now,
+            "ttl_sec": 10, # quote 有效期短
+            "symbol": symbol,
+            "action": "quote",
+            "account": "" # 尝试填充
+        }
+        
+        # 尝试填充 account
+        with history_lock:
+            if history_status and isinstance(history_status[0].get("parsed"), dict):
+                cmd["account"] = norm_str(history_status[0]["parsed"].get("account"))
+        
+        with commands_lock:
+            commands.append(cmd)
+            cmd_counter += 1
+            
+        print(f"[ORDER][QUOTE] queued id={cmd['id']}")
+        return jsonify({"success": True, "message": "报价请求已发送", "order": cmd})
+
     # 优先从 inpMarginUSD (滑块值) 计算 lots
     inp_margin_usd = float(data.get('marginPct', 0) or 0) # 兼容前端字段 marginPct
     
@@ -2347,6 +2400,7 @@ def submit_order_v1():
         lots = float(data.get('lots', 0))
     
     if lots <= 0:
+        print(f"[ORDER][REJECT] invalid lots={lots}")
         return jsonify({"success": False, "message": "计算手数无效，请检查投入金额或价格"}), 400
 
     # 构造命令对象
@@ -2397,8 +2451,7 @@ def submit_order_v1():
     if side_raw == 'CLOSE':
         cmd["action"] = "close"
         cmd["ticket"] = int(data.get("ticket"))
-    elif side_raw == 'QUOTE' or cmd_type_raw == 'quote':
-        cmd["action"] = "quote"
+    # QUOTE 已提前处理
     elif "limit" in cmd_type_raw:
         cmd["action"] = "limit"
         cmd["side"] = "buy" if side_raw.upper() == "BUY" else "sell"
@@ -2421,6 +2474,7 @@ def submit_order_v1():
         commands.append(cmd)
         cmd_counter += 1
     
+    print(f"[ORDER][QUEUE] action={cmd.get('action')} symbol={symbol} lots={lots} account={account} id={cmd['id']}")
     return jsonify({
         "success": True, 
         "message": "指令已发送到队列",
