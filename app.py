@@ -1007,7 +1007,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="symCenter">
         <div class="symName">
           <span id="symName">XAUUSD</span>
-          <span class="symBadge" onclick="$('pairMask').style.display='flex'">切换品种 ▼</span>
+          <span class="symBadge" onclick="showCurrentCategoryPairs()">切换品种 ▼</span>
         </div>
       </div>
       <div class="symRight">
@@ -1246,6 +1246,8 @@ HTML_TEMPLATE = r"""<!doctype html>
     function fmtNum(n, d) { return parseFloat(n).toFixed(d); }
 
     // 暴露全局 API
+    window.pendingOrders = []; // 本地暂存的委托单
+
     window.API = {
       // 1. 发送下单指令
       submitOrder: async function(symbol, side, type, marginPct, leverage, calculatedLots, params) {
@@ -1268,6 +1270,18 @@ HTML_TEMPLATE = r"""<!doctype html>
             })
           });
           const data = await response.json();
+          
+          if(data.success && data.order && type !== 'quote') {
+              // 存入本地委托列表 (排除 quote 请求)
+              window.pendingOrders.unshift({
+                  ...data.order,
+                  status: 'pending',
+                  local_ts: Date.now()
+              });
+              // 触发一次 UI 更新
+              updateOrdersList();
+          }
+          
           return data;
         } catch (error) {
           console.error("下单失败:", error);
@@ -1392,12 +1406,11 @@ HTML_TEMPLATE = r"""<!doctype html>
         </div>`;
       
       let html = '';
-      if(typeCode === 'market') { html += renderInput('点差', '0.00', 'inpSpread'); } 
-      else if(typeCode === 'market_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); html += renderInput('点差', '0.00', 'inpSpread'); } 
+      if(typeCode === 'market') { /* 市价单无额外输入 */ } 
+      else if(typeCode === 'market_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); } 
       else if(typeCode === 'limit') { html += renderInput('触发价', '0.00', 'inpPrice'); }
       else if(typeCode === 'limit_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); html += renderInput('触发价', '0.00', 'inpPrice'); }
       
-      // html += renderInput('有效时间 (分钟)', '输入过期分钟数');
       area.innerHTML = html;
     };
 
@@ -1651,11 +1664,34 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('pairMask').style.display = 'flex';
     };
 
+    // 新增：自动识别品种所属板块并显示
+    window.showCurrentCategoryPairs = function() {
+        const currentSym = $('symName').innerText;
+        let foundCategory = 'forex'; // 默认外汇
+        
+        for (const [cat, pairs] of Object.entries(categoryPairs)) {
+            if (pairs.some(p => p.name === currentSym)) {
+                foundCategory = cat;
+                break;
+            }
+        }
+        
+        // 切换顶部 Tab 选中状态
+        document.querySelectorAll('.tabs .tab').forEach(t => {
+            t.classList.remove('active');
+            if(t.dataset.category === foundCategory) t.classList.add('active');
+        });
+        
+        showCategoryPairs(foundCategory);
+    };
+
     window.setSymbol = function(name, price) {
       $('symName').innerText = name; 
       window.quantState.price = price;
       $('midPriceText').innerText = price.toFixed(name === 'XAUUSD' ? 2 : 4);
       $('pairMask').style.display = 'none';
+      
+      // 重置滑轮和计算
       window.updateCalculations();
       
       // Start quote polling
@@ -1664,9 +1700,11 @@ HTML_TEMPLATE = r"""<!doctype html>
       quoteInterval = setInterval(() => {
           window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {});
       }, 1000);
+      
+      // 立即刷新数据以获取最新状态
+      refreshData();
     };
     
-    // 自动刷新数据
     async function refreshData() {
         // 更新系统时间
         const now = new Date();
@@ -1692,11 +1730,18 @@ HTML_TEMPLATE = r"""<!doctype html>
             
             const data = await res.json();
             
+            // 并行获取历史成交记录，用于订单跟踪
+            const tradesRes = await fetch('/api/history_trades?limit=50');
+            const tradesData = await tradesRes.json();
+            const recentTrades = tradesData.trades || [];
+            
             // 记录性能结束时间并打印日志 (性能监控)
             const endTime = performance.now();
             console.log(`[Perf] RefreshData took ${(endTime - startTime).toFixed(2)}ms`);
 
             if(data) {
+                // ... (原有状态更新逻辑保持不变) ...
+                
                 // 更新账户数据
                 const equity = data.equity || 0;
                 const freeMargin = data.free_margin || 0;
@@ -1724,7 +1769,11 @@ HTML_TEMPLATE = r"""<!doctype html>
                 $('dailyPnlPctVal').style.color = (data.daily_return >= 0 ? 'var(--green)' : 'var(--red)');
                 
                 // 更新持仓列表
-                updatePositionsList(data.positions || []);
+                const positions = data.positions || [];
+                updatePositionsList(positions);
+                
+                // 更新委托列表 (结合本地 pending 和历史 trades)
+                updateOrdersList(recentTrades, positions);
                 
                 // 尝试从持仓或历史数据更新当前价格（如果有）
                 let priceUpdated = false;
@@ -1796,51 +1845,79 @@ HTML_TEMPLATE = r"""<!doctype html>
         }
     }
     
-    function updatePositionsList(positions) {
-        const list = $('list-positions');
-        if(!positions || positions.length === 0) {
-            list.innerHTML = '<div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无持仓</div>';
+    // 新增：更新委托列表
+    function updateOrdersList(recentTrades = [], positions = []) {
+        const list = $('list-orders');
+        
+        // 1. 根据成交记录更新本地 pendingOrders 状态
+        window.pendingOrders.forEach(order => {
+            if(order.status === 'pending') {
+                // 检查是否已成交 (match cmd_id)
+                // 注意：这里假设 history_trades 返回了 cmd_id
+                const trade = recentTrades.find(t => t.cmd_id === order.id);
+                if(trade) {
+                    if(trade.ok) {
+                        order.status = 'executed';
+                        order.ticket = trade.ticket;
+                        order.exec_time = trade.received_at;
+                        
+                        // 检查是否还在持仓中
+                        const inPos = positions.find(p => p.ticket === trade.ticket);
+                        if(!inPos) order.status = 'closed'; // 已平仓
+                    } else {
+                        order.status = 'failed';
+                        order.error = trade.message || trade.error;
+                    }
+                } else if ((Date.now() - order.local_ts) > 60000) {
+                    // 超过60秒未成交，标记为超时
+                    order.status = 'timeout';
+                }
+            }
+        });
+        
+        // 2. 渲染列表
+        // 过滤掉 'closed' 或 'failed' 且超过一定时间的订单，以免列表无限增长
+        // 这里简单展示所有
+        
+        if(!window.pendingOrders || window.pendingOrders.length === 0) {
+            list.innerHTML = '<div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无委托记录</div>';
             return;
         }
         
         let html = '';
-        positions.forEach(pos => {
-            const sideClass = (pos.side && pos.side.toLowerCase() === 'buy') ? 'buy' : 'sell';
-            const profitColor = pos.profit >= 0 ? 'var(--green)' : 'var(--red)';
-            const profitSign = pos.profit >= 0 ? '+' : '';
+        window.pendingOrders.forEach(order => {
+            let statusColor = 'var(--muted)';
+            let statusText = '处理中';
+            
+            if(order.status === 'executed') { statusColor = 'var(--green)'; statusText = '已成交 #' + order.ticket; }
+            else if(order.status === 'failed') { statusColor = 'var(--red)'; statusText = '失败: ' + (order.error || '未知'); }
+            else if(order.status === 'timeout') { statusColor = 'var(--yellow)'; statusText = '超时未回'; }
+            else if(order.status === 'closed') { statusColor = 'var(--text)'; statusText = '已平仓'; }
+            
+            const sideClass = (order.side && order.side.toLowerCase() === 'buy') ? 'buy' : 'sell';
             
             html += `
-            <div class="posItem">
-              <div class="posTop">
-                <div>
-                  <div class="posTitle"><span class="sideTag ${sideClass}">${pos.side}</span> ${pos.symbol} <span class="symBadge" style="background:var(--chip); color:var(--text)">${pos.lots}手</span></div>
-                  <div class="mini" style="margin-top: 0.5rem;">浮动盈亏</div>
-                  <div style="font-size: 1.5rem; font-weight: 800; color: ${profitColor};">${profitSign}${fmtNum(pos.profit, 2)}</div>
+            <div class="posItem" style="border-bottom: 1px solid var(--line);">
+              <div class="posTop" style="margin-bottom:0.5rem">
+                <div class="posTitle" style="font-size:1rem">
+                    <span class="sideTag ${sideClass}">${order.side}</span> ${order.symbol} 
+                    <span style="font-size:0.875rem; margin-left:0.5rem; color:${statusColor}">${statusText}</span>
                 </div>
-                <div style="text-align:right">
-                  <div class="mini">订单号</div>
-                  <div class="big" style="font-family: monospace;">#${pos.ticket}</div>
-                  <div class="mini" style="margin-top:0.375rem">开仓时间 <span style="color:var(--text); font-weight:800">${pos.open_time_str || '-'}</span></div>
-                </div>
+                <div class="mini">${new Date(order.local_ts).toLocaleTimeString()}</div>
               </div>
-              <div class="posGrid">
-                <div><div class="mini">开仓价</div><div class="big">${pos.open_price}</div></div>
-                <div><div class="mini">当前价</div><div class="big">${pos.current_price}</div></div>
-                <div><div class="mini">止损 (S/L)</div><div class="big">${pos.sl}</div></div>
-                <div><div class="mini">止盈 (T/P)</div><div class="big">${pos.tp}</div></div>
-                <div><div class="mini">占用保证金</div><div class="big">${fmtNum(pos.margin, 2)}</div></div>
-              </div>
-              <div class="posActions">
-                <button class="ghost" onclick="openModifyOrderPanel('${pos.ticket}', ${pos.lots})">修改订单</button>
-                <button class="ghost" style="color: var(--red); border-color: rgba(246,70,93,0.3);" onclick="window.API.submitOrder('${pos.symbol}', 'CLOSE', 'market', 0, 0, ${pos.lots}, {ticket: '${pos.ticket}'})">一键平仓</button>
+              <div class="posGrid" style="grid-template-columns: repeat(3, 1fr); margin-bottom:0;">
+                <div><div class="mini">类型</div><div class="big" style="font-size:0.875rem">${order.action || 'market'}</div></div>
+                <div><div class="mini">数量</div><div class="big" style="font-size:0.875rem">${order.lots}</div></div>
+                <div><div class="mini">价格</div><div class="big" style="font-size:0.875rem">${order.price || '市价'}</div></div>
               </div>
             </div>`;
         });
+        
         list.innerHTML = html;
         
         // 更新底部 Tab 数量
-        const tab = document.querySelectorAll('.segTabs .seg')[0];
-        if(tab) tab.innerHTML = `持有仓位 (${positions.length})`;
+        const tab = document.querySelectorAll('.segTabs .seg')[1]; // index 1 is orders
+        if(tab) tab.innerHTML = `当前委托 (${window.pendingOrders.length})`;
     }
   </script>
 </body>
