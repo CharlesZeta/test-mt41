@@ -2851,17 +2851,33 @@ def modify_position_v1():
     tp = float(data.get('tpPrice', 0) or 0)
     sl = float(data.get('slPrice', 0) or 0)
     
-    # 由于 EA 目前不支持 Modify 命令，这里只能记录日志或做有限处理
-    # 如果要支持，需要在 EA 添加 Modify 动作。
-    # 这里我们生成一个 'modify' 动作的命令，假设未来 EA 会支持，或者作为日志记录
+    # 构造 modify 命令
+    global cmd_counter
+    now = int(time.time())
     
-    print(f"【API】修改持仓: {data}")
+    cmd = {
+        "id": str(cmd_counter),
+        "nonce": generate_nonce(),
+        "created_at": now,
+        "ttl_sec": 60,
+        "action": "modify",
+        "ticket": int(position_id),
+        "tp": tp,
+        "sl": sl
+    }
     
-    # 临时：由于 EA 不支持 modify，返回提示
-    # 或者，如果仅仅是平仓部分手数，可以生成 close 命令
-    # 但这里是修改 TP/SL
-    
-    return jsonify({"success": False, "message": "EA 暂不支持直接修改订单属性"}), 400
+    # 填充 account
+    with history_lock:
+        if history_status and isinstance(history_status[0].get("parsed"), dict):
+            account = norm_str(history_status[0]["parsed"].get("account"))
+            if account:
+                cmd["account"] = account
+
+    with commands_lock:
+        commands.append(cmd)
+        cmd_counter += 1
+        
+    return jsonify({"success": True, "message": "修改指令已发送"})
 
 @app.route('/api/v1/position/lock', methods=['POST'])
 def lock_position_v1():
