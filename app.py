@@ -180,16 +180,6 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
             history_positions.appendleft(record)
         elif category == "report":
             history_report.appendleft(record)
-            # 日志记录 report
-            if record.get("parsed"):
-                parsed = record["parsed"]
-                desc = parsed.get("desc", "")
-                if desc in ("SPREAD_REJECT", "SPREAD_OK", "SPREAD_EXCEED_ON_FILL"):
-                    print(f"[SPREAD_LOG] {parsed.get('code')} {desc} "
-                          f"account={parsed.get('account')} "
-                          f"spread={parsed.get('spread')} "
-                          f"threshold={parsed.get('threshold')} "
-                          f"cmd_id={parsed.get('cmd_id')}")
         elif category == "poll":
             history_poll.appendleft(record)
         elif category == "echo":
@@ -547,25 +537,6 @@ def api_latest_status():
         latest_status_record = history_status[0] if history_status else None
         latest_positions_record = history_positions[0] if history_positions else None
         
-        # 查找最新的 QUOTE_DATA 报告
-        latest_quote = None
-        for record in history_report:
-            parsed = record.get("parsed")
-            if parsed and parsed.get("desc") == "QUOTE_DATA":
-                try:
-                    msg = parsed.get("message", "{}")
-                    quote_data = json.loads(msg)
-                    if isinstance(quote_data, dict) and "bid" in quote_data:
-                        latest_quote = {
-                            "bid": quote_data.get("bid"),
-                            "ask": quote_data.get("ask"),
-                            "spread": parsed.get("spread"),
-                            "ts": parsed.get("ts")
-                        }
-                        break
-                except:
-                    continue
-
         positions_data = None
         if latest_positions_record:
             positions_data = latest_positions_record.get("parsed", {}).get("positions", [])
@@ -574,8 +545,6 @@ def api_latest_status():
         detail = extract_latest_details_from_status(latest_status_record, positions_data)
         
         if detail:
-            if latest_quote:
-                detail["latest_quote"] = latest_quote
             return jsonify(detail)
         else:
             return jsonify({})
@@ -604,1388 +573,1359 @@ def api_history_trades():
         return jsonify({"trades": trades})
 
 # ==================== 主页 ====================
-HTML_TEMPLATE = r"""<!doctype html>
+PREVIEW_TEMPLATE = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="format-detection" content="telephone=no" />
-  <meta name="theme-color" content="#ffffff" />
-  
-  <title>量化交易终端 - 移动版</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>交易UI原型（可滚动/可加品种/可转动滑轮）</title>
   <style>
-    :root {
-      --bg: #f5f7fa;
-      --card: #ffffff;
-      --text: #1a1e23;
-      --muted: #848e9c;
-      --line: #eaecef;
-      --green: #0ecb81;
-      --red: #f6465d;
-      --yellow: #f0b90b;
-      --chip: #f3f5f7;
-      --shadow: 0 0.5rem 1.5rem rgba(0,0,0,0.06);
-      --radius: 1rem;
-      --safe-bottom: env(safe-area-inset-bottom);
+    :root{
+      --bg:#f6f7f9;
+      --card:#ffffff;
+      --text:#111;
+      --muted:#7a7f87;
+      --line:#e9ecf1;
+      --green:#25b97a;
+      --red:#ef4d5c;
+      --yellow:#f6c343;
+      --chip:#f1f3f6;
+      --shadow: 0 10px 30px rgba(0,0,0,.08);
+      --radius: 16px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0;
+      font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      color:var(--text);
+      background:var(--bg);
     }
 
-    /* CSS Reset (移动端优化) */
-    * { 
-      box-sizing: border-box; 
-      -webkit-tap-highlight-color: transparent; 
-      outline: none;
-    }
-    
-    html {
-      font-size: 16px; /* 基准字号 */
-      -webkit-text-size-adjust: 100%; /* 禁止字体自动缩放 */
-    }
-
-    body {
-      margin: 0; 
-      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-      color: var(--text); 
-      background: var(--bg); 
-      line-height: 1.5;
-      overflow-x: hidden; /* 防止横向滚动 */
-      width: 100%;
-      overscroll-behavior-y: none; /* 禁用下拉刷新效果，模拟原生App */
-    }
-
-    /* 消除点击延迟 */
-    button, a, input, [role="button"] {
-      touch-action: manipulation;
-    }
-
-    /* 容器布局 */
-    .app { 
-      width: 100%;
-      max-width: 62.5rem; /* 1000px */
-      margin: 0 auto; 
-      min-height: 100vh; 
-      padding: 1.25rem; /* 20px */
-      padding-bottom: calc(1.25rem + var(--safe-bottom));
+    /* 容器：可上下滑动 */
+    .app{
+      max-width: 420px;
+      margin: 0 auto;
+      min-height: 100vh;
+      padding: calc(12px + var(--safe-top)) 14px calc(90px + var(--safe-bottom));
     }
 
     /* 顶部 */
-    .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem; }
-    .title { font-size: 1.375rem; font-weight: 800; }
-    .btn { 
-      border: 1px solid var(--line); 
-      background: #fff; 
-      border-radius: 0.5rem; 
-      padding: 0.5rem 1rem; 
-      font-weight: 600; 
-      min-height: 2.75rem; /* 44px 最小触控区域 */
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.9375rem;
-      cursor: pointer;
+    .topbar{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding: 8px 0 12px;
     }
-    /* 移除 hover-only，改为 active */
-    .btn:active { background: var(--chip); }
-
-    /* 顶部分类 Tabs */
-    .tabs-wrapper { 
-      overflow-x: auto; 
-      white-space: nowrap; 
-      margin-bottom: 1.25rem; 
-      -webkit-overflow-scrolling: touch; 
-      padding-bottom: 0.3125rem; 
-      scrollbar-width: none; /* Firefox */
+    .title{
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: .2px;
     }
-    .tabs-wrapper::-webkit-scrollbar { display: none; } /* Chrome/Safari */
-    
-    .tabs { display: inline-flex; gap: 0.5rem; }
-    .tab { 
-      padding: 0.5rem 1rem; 
-      border-radius: 0.5rem; 
-      background: transparent; 
-      color: var(--muted); 
-      font-weight: 700; 
-      border: none; 
-      font-size: 0.9375rem; /* 15px */
-      min-height: 2.75rem; /* 44px */
-      transition: 0.2s;
-      cursor: pointer;
-    }
-    .tab.active { background: var(--card); color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-
-    /* 行情头 */
-    .symRow { 
-      display: grid;
-      grid-template-columns: 1fr auto 1fr;
-      align-items: center;
-      margin-bottom: 1.25rem; background: var(--card); padding: 1.25rem; 
-      border-radius: var(--radius); box-shadow: var(--shadow); 
-      border: 1px solid var(--line); 
-    }
-    .symLeftTime { font-family: monospace; font-weight: 700; color: var(--muted); font-size: 0.875rem; justify-self: start; }
-    .symCenter { display: flex; flex-direction: column; align-items: center; justify-self: center; gap: 0.25rem; }
-    .symName { display: flex; align-items: center; gap: 0.625rem; font-size: 1.625rem; font-weight: 800; }
-    .symBadge { 
-      font-size: 0.875rem; padding: 0.25rem 0.5rem; 
-      border-radius: 0.375rem; background: var(--text); color: #fff; 
-      font-weight: 700; min-height: 2rem; display: inline-flex; align-items: center;
-      cursor: pointer;
-    }
-    .symRight { display: flex; align-items: center; justify-self: end; }
-    .iconBtn.huge-chart { 
-      width: 5rem; height: 5rem; border-radius: 1rem; 
-      border: 2px solid var(--line); background: #fff; 
-      display: grid; place-items: center; font-size: 2.25rem; 
-      box-shadow: 0 4px 12px rgba(0,0,0,0.05); transition: 0.2s; 
-      cursor: pointer;
-    }
-    .iconBtn.huge-chart:active { transform: scale(0.95); }
-
-    /* 核心布局 */
-    .main-grid { display: flex; gap: 1.25rem; align-items: stretch; }
-    .col-left { flex: 1.2; display: flex; flex-direction: column; gap: 1.25rem; }
-    .col-right { flex: 1; display: flex; flex-direction: column; gap: 1.25rem; }
-    .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: 1.5rem; }
-
-    /* 数据统计 */
-    .obTopStats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
-    .obStatItem { display: flex; flex-direction: column; gap: 0.25rem; }
-    .obStatLabel { font-size: 0.875rem; /* >= 14px */ font-weight: 600; color: var(--muted); }
-    .obStatVal { font-weight: 800; font-size: 1rem; color: var(--text); }
-    
-    .midPrice { text-align: center; margin: 1.25rem 0 0.3125rem; font-size: 2.25rem; font-weight: 800; letter-spacing: -1px; }
-    .midSub { display: flex; justify-content: center; align-items: center; gap: 0.5rem; color: var(--muted); font-weight: 600; font-size: 0.875rem; margin-bottom: 1.5rem; }
-    
-    .signal-dot { width: 0.625rem; height: 0.625rem; border-radius: 50%; display: inline-block; transition: background 0.3s; }
-    .signal-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-    .signal-dot.yellow { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
-    .signal-dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
-
-    /* 止损计算器 */
-    .sl-calculator { background: #fafbfc; border: 1px solid var(--line); border-radius: 0.75rem; padding: 1rem; margin-top: auto; }
-    .sl-title { font-size: 0.875rem; font-weight: 800; margin-bottom: 0.75rem; color: var(--text); display: flex; justify-content: space-between; align-items: flex-end;}
-    .sl-row { display: flex; justify-content: space-between; margin: 0.5rem 0; font-size: 0.875rem; font-variant-numeric: tabular-nums; }
-    .sl-row .k { color: var(--muted); font-weight: 600; }
-    .sl-row .v { font-weight: 800; font-size: 0.875rem; color: var(--text); }
-
-    /* 表单区 */
-    .form-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; }
-    .chips { display: flex; gap: 0.5rem; }
-    .chip { 
-      padding: 0.5rem 0.75rem; border-radius: 0.5rem; background: var(--chip); 
-      font-weight: 700; font-size: 0.875rem; border: 1px solid transparent; 
-      min-height: 2rem; display: inline-flex; align-items: center;
-      cursor: pointer;
-    }
-    .chip.primary { background: var(--text); color: #fff; }
-    
-    .form-row { 
-      display: flex; justify-content: space-between; align-items: center; 
-      background: var(--chip); border-radius: 0.625rem; padding: 0.875rem 1rem; 
-      margin-bottom: 0.75rem; border: 1px solid transparent; transition: 0.2s; 
-      min-height: 3.5rem; /* 56px touch target */
-      cursor: pointer;
-    }
-    .form-row:focus-within { background: #fff; border-color: var(--text); }
-    .form-row label { color: var(--muted); font-weight: 600; font-size: 0.875rem; white-space: nowrap; }
-    .form-row input { 
-      border: none; background: transparent; text-align: right; width: 100%; margin-left: 1rem; 
-      font-size: 1rem; /* >= 16px to prevent zoom */
-      font-weight: 800; color: var(--text); outline: none; font-family: inherit; 
-    }
-    .form-row .value-text { font-size: 1rem; font-weight: 800; color: var(--text); }
-
-    /* 滑块 */
-    .range-wrap { margin: 1.25rem 0 1.5rem; padding: 0; }
-    .range-header { display: flex; justify-content: space-between; margin-bottom: 0.75rem; font-size: 0.875rem; font-weight: 700; color: var(--muted); align-items: center;}
-    input[type=range] { -webkit-appearance: none; width: 100%; background: transparent; padding: 0.625rem 0; margin: 0; min-height: 2.75rem; cursor: pointer; } /* 44px */
-    input[type=range]:focus { outline: none; }
-    input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 0.375rem; background: linear-gradient(to right, var(--text) 0%, var(--text) var(--track-fill, 10%), var(--line) var(--track-fill, 10%), var(--line) 100%); border-radius: 3px; }
-    input[type=range]::-webkit-slider-thumb { height: 1.5rem; width: 1.5rem; border-radius: 50%; background: #fff; border: 4px solid var(--text); -webkit-appearance: none; margin-top: -0.5625rem; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
-
-    /* 按钮组 */
-    .cta-group { display: flex; gap: 0.75rem; margin-top: 0.625rem;}
-    .cta { 
-      border: none; flex: 1; padding: 1rem; border-radius: 0.75rem; 
-      color: #fff; font-size: 1rem; font-weight: 800; 
-      transition: transform 0.1s; 
-      min-height: 3.5rem; /* 56px */
-      display: flex; align-items: center; justify-content: center;
-      cursor: pointer;
-    }
-    .cta:active { transform: scale(0.98); }
-    .cta.buy { background: var(--green); }
-    .cta.sell { background: var(--red); }
-
-    /* 底部列表 */
-    .bottom-section { margin-top: 2rem; }
-    .segTabs { display: flex; gap: 1.5rem; border-bottom: 1px solid var(--line); margin-bottom: 1.25rem; }
-    .seg { 
-      padding: 0.75rem 0.25rem; color: var(--muted); font-weight: 700; font-size: 1rem; 
-      position: relative; min-height: 2.75rem; display: flex; align-items: center;
-      cursor: pointer;
-    }
-    .seg.active { color: var(--text); }
-    .seg.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 3px; border-radius: 3px 3px 0 0; background: var(--text); }
-    
-    .listCard { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); display: none; }
-    .listCard.active { display: block; }
-    .posItem { padding: 1.25rem; }
-    .posTop { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem; }
-    .posTitle { display: flex; gap: 0.5rem; align-items: center; font-weight: 800; font-size: 1.125rem; }
-    .sideTag { padding: 0.125rem 0.5rem; border-radius: 0.375rem; font-size: 0.875rem; font-weight: 800; border: 1px solid; background: #fff; }
-    .sideTag.buy { color: var(--green); border-color: rgba(37,185,122,.3); }
-    .sideTag.sell { color: var(--red); border-color: rgba(239,77,92,.3); }
-    .posGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
-    .mini { color: var(--muted); font-size: 0.875rem; /* >= 14px */ font-weight: 600; margin-bottom: 0.25rem; }
-    .big { font-weight: 800; font-size: 1rem; }
-    .posActions { display: flex; gap: 0.75rem; }
-    .ghost { 
-      flex: 1; border: 1px solid var(--line); background: transparent; 
-      border-radius: 0.5rem; padding: 0.625rem; font-weight: 700; 
-      min-height: 2.75rem; display: flex; align-items: center; justify-content: center;
-      transition: 0.2s; 
-      cursor: pointer;
-    }
-    .ghost:active { background: var(--chip); }
-
-    /* 弹窗/动作面板 (Action Sheet) */
-    .modalMask { 
-      position: fixed; inset: 0; background: rgba(0,0,0,.5); 
-      display: none; align-items: center; justify-content: center; 
-      padding: 1.25rem; z-index: 100; backdrop-filter: blur(2px); 
-    }
-    .modal { 
-      width: min(27.5rem, 100%); background: #fff; border-radius: 1.25rem; 
-      overflow: hidden; box-shadow: 0 1.25rem 2.5rem rgba(0,0,0,0.1); 
-      animation: pop 0.2s ease-out; display: flex; flex-direction: column; max-height: 90vh; 
-    }
-    @keyframes pop { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-    
-    .modalHeader { 
-      padding: 1.25rem; display: flex; justify-content: space-between; align-items: center; 
-      border-bottom: 1px solid var(--line); font-weight: 800; font-size: 1.125rem; flex-shrink: 0; 
-      min-height: 3.5rem;
-    }
-    .modalBody { padding: 1.25rem; overflow-y: auto; flex-grow: 1; }
-    .select-item { 
-      padding: 1rem; border-bottom: 1px solid var(--line); font-weight: 700; 
-      display: flex; justify-content: space-between; align-items: center; min-height: 3.5rem;
-      cursor: pointer;
-    }
-    .select-item:last-child { border-bottom: none; }
-    .select-item:active { background: var(--chip); }
-    .select-item.active { color: var(--text); }
-
-    /* 3. 移动端媒体查询 (320-428px) */
-    @media (max-width: 768px) {
-      .app { padding: 1rem; padding-bottom: calc(1rem + var(--safe-bottom)); }
-      
-      /* 单列流式布局 */
-      .main-grid { flex-direction: column; gap: 1rem; }
-      .col-left, .col-right { gap: 1rem; }
-      
-      /* 底部动作面板模式 */
-      .modalMask { align-items: flex-end; padding: 0; }
-      .modal { 
-        width: 100%; max-width: 100%; 
-        border-radius: 1.5rem 1.5rem 0 0; 
-        margin: 0; animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); 
-        padding-bottom: var(--safe-bottom);
-      }
-      @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
-      
-      /* 字体与间距微调 */
-      .title { font-size: 1.25rem; }
-      .midPrice { font-size: 2rem; }
-      .posGrid { grid-template-columns: repeat(2, 1fr); }
-      
-      /* 1px 边框优化 */
-      .form-row, .btn, .tab, .cta, .ghost, .symRow, .card, .sl-calculator {
-        border-width: 0.0625rem; /* fallback */
-      }
-      @media (-webkit-min-device-pixel-ratio: 2) {
-        .form-row, .btn, .tab, .cta, .ghost, .symRow, .card, .sl-calculator { border-width: 0.5px; }
-      }
+    .btn{
+      border:1px solid var(--line);
+      background:#fff;
+      border-radius:999px;
+      padding:8px 12px;
+      font-weight:600;
+      color:#222;
     }
 
-    /* 问卷样式 */
-    .quiz-item { margin-bottom: 1.5rem; }
-    .quiz-q { font-size: 0.9375rem; font-weight: 800; margin-bottom: 0.75rem; color: var(--text); }
-    .quiz-opts { display: flex; gap: 0.75rem; flex-direction: column; }
-    .quiz-opt { 
-      flex: 1; padding: 0.75rem; border: 1px solid var(--line); border-radius: 0.625rem; 
-      text-align: center; font-weight: 700; transition: 0.2s; background: var(--chip); 
-      min-height: 3rem; display: flex; align-items: center; justify-content: center;
-      cursor: pointer;
+    /* Tab */
+    .tabs{
+      display:flex;
+      gap:10px;
+      align-items:center;
+      padding: 4px 0 10px;
     }
-    .quiz-opt.selected { background: var(--text); color: #fff; border-color: var(--text); }
-
-    /* 日历样式 */
-    .cal-header { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center; font-weight: 800; color: var(--muted); font-size: 0.875rem; margin-bottom: 0.5rem; }
-    .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
-    .cal-day { 
-      border: 1px solid var(--line); border-radius: 0.5rem; padding: 0.25rem; text-align: center; 
-      min-height: 3.5rem; display: flex; flex-direction: column; justify-content: space-between; 
+    .tab{
+      padding:8px 12px;
+      border-radius:999px;
+      background:transparent;
+      color:var(--muted);
+      font-weight:700;
+      border:1px solid transparent;
     }
-    .cal-day.empty { border: none; background: transparent; }
-    .cal-date { font-weight: 800; font-size: 0.875rem; color: var(--text); }
-    .cal-pnl { font-size: 0.75rem; font-weight: 800; margin-top: 0.25rem; }
-
-    /* 错误弹窗 */
-    .error-popup { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: none; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(4px); }
-    .error-popup.show { display: flex; }
-    .error-popup-content { background: #fff; border-radius: 1.25rem; padding: 1.5rem; width: min(22.5rem, 85%); text-align: center; box-shadow: 0 1.25rem 3.75rem rgba(0,0,0,0.3); }
-    .error-popup-icon { width: 4rem; height: 4rem; background: linear-gradient(135deg, #fee2e2, #fecaca); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.25rem; font-size: 2rem; }
-    .error-popup-title { font-size: 1.25rem; font-weight: 800; color: #1f2937; margin-bottom: 1rem; }
-    .error-popup-list { text-align: left; background: #f9fafb; border-radius: 0.75rem; padding: 1rem; margin-bottom: 1.25rem; max-height: 12.5rem; overflow-y: auto; }
-    .error-popup-item { display: flex; align-items: center; padding: 0.5rem 0; color: #dc2626; font-size: 0.875rem; font-weight: 600; border-bottom: 1px solid #e5e7eb; }
-    .error-popup-item:last-child { border-bottom: none; }
-    .error-popup-btn { 
-      background: linear-gradient(135deg, #1f2937, #374151); color: #fff; border: none; 
-      padding: 0.875rem 2rem; border-radius: 0.75rem; font-size: 1rem; font-weight: 700; 
-      width: 100%; min-height: 3rem;
-      cursor: pointer;
+    .tab.active{
+      background: var(--chip);
+      color: var(--text);
+      border-color: var(--line);
     }
 
-    /* 4. 图片视频资源优化 (CSS层) */
-    img, video { max-width: 100%; height: auto; display: block; object-fit: cover; }
-    
-    /* 锁仓按钮 */
-    .lock-btn { 
-      background: linear-gradient(135deg, #f6465d, #ff7b8c); color: #fff; border: none; 
-      padding: 1rem; border-radius: 0.75rem; font-size: 1rem; font-weight: 800; 
-      width: 100%; box-shadow: 0 0.25rem 0.75rem rgba(246,70,93,0.3); margin-top: 0.625rem; 
-      min-height: 3.5rem;
-      cursor: pointer;
+    /* 品种行 */
+    .symRow{
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:10px;
+      padding: 8px 0;
+    }
+    .symLeft{
+      display:flex;
+      flex-direction:column;
+      gap:4px;
+    }
+    .symName{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      font-size: 22px;
+      font-weight: 900;
+    }
+    .symBadge{
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--chip);
+      border: 1px solid var(--line);
+      color:#333;
+      font-weight: 700;
+    }
+    .symPnl{
+      color: var(--red);
+      font-weight: 800;
+    }
+    .symRight{
+      display:flex;
+      align-items:center;
+      gap:8px;
+    }
+    .iconBtn{
+      width:34px;height:34px;
+      border-radius:10px;
+      border:1px solid var(--line);
+      background:#fff;
+      display:grid;place-items:center;
+    }
+
+    /* 行情 + 下单区域 */
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      align-items:start;
+    }
+    .card{
+      background: var(--card);
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    /* 盘口卡片（左） */
+    .orderbook{
+      padding: 12px;
+    }
+    .obHeader{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      margin-bottom:10px;
+    }
+    .obMeta{
+      display:flex;
+      flex-direction:column;
+      gap:2px;
+      color:var(--muted);
+      font-weight:700;
+      font-size:12px;
+    }
+    .obTable{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 10px;
+      font-variant-numeric: tabular-nums;
+      font-size: 13px;
+    }
+    .obHead{
+      color:var(--muted);
+      font-weight:800;
+      font-size:12px;
+    }
+    .priceRed{ color: var(--red); font-weight:900; }
+    .priceGreen{ color: #18a66b; font-weight:900; }
+
+    .midPrice{
+      text-align:center;
+      margin: 12px 0 10px;
+      font-size: 28px;
+      font-weight: 1000;
+      letter-spacing: .3px;
+    }
+    .midSub{
+      text-align:center;
+      margin-top:-6px;
+      color:var(--muted);
+      font-weight:700;
+      font-size:12px;
+    }
+    .ratioBar{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      margin-top:12px;
+    }
+    .bar{
+      flex:1;
+      height:8px;
+      background:#e8edf4;
+      border-radius:999px;
+      overflow:hidden;
+      display:flex;
+    }
+    .bar > div{ height:100%; }
+    .barBuy{ background: var(--green); width:63%; }
+    .barSell{ background: var(--red); width:37%; }
+    .barText{
+      display:flex;
+      justify-content:space-between;
+      font-size:12px;
+      font-weight:800;
+      color:var(--muted);
+      margin-top:6px;
+    }
+
+    /* 下单卡片（右） */
+    .order{
+      padding: 12px;
+    }
+    .row{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      margin-bottom:10px;
+    }
+    .chips{
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+    .chip{
+      padding:8px 10px;
+      border-radius: 12px;
+      background: #fff;
+      border:1px solid var(--line);
+      font-weight:800;
+      min-width: 72px;
+      text-align:center;
+    }
+    .chip.primary{
+      background: var(--chip);
+    }
+    .label{
+      color:var(--muted);
+      font-weight:800;
+      font-size:12px;
+    }
+    .val{
+      font-weight:900;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .field{
+      border:1px solid var(--line);
+      background: #f7f8fb;
+      border-radius: 14px;
+      padding: 10px 12px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      color:#9aa0a8;
+      font-weight:800;
+      margin-bottom:10px;
+    }
+    .field strong{ color:#222; }
+    .toggles{
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+      margin: 12px 0;
+    }
+    .toggleRow{
+      display:flex;
+      align-items:center;
+      gap:10px;
+      font-weight:900;
+    }
+    .radio{
+      width:18px;height:18px;border-radius:50%;
+      border:2px solid #cfd6df;
+      background:#fff;
+    }
+
+    /* 自定义滑轮（可拖动/可点刻度） */
+    .wheelWrap{
+      margin: 10px 0 14px;
+      padding: 10px 6px 4px;
+    }
+    .wheel{
+      position:relative;
+      height: 44px;
+      user-select:none;
+      touch-action: none;
+    }
+    .track{
+      position:absolute;
+      left:8px; right:8px;
+      top: 22px;
+      height: 4px;
+      background: #e8edf4;
+      border-radius:999px;
+    }
+    .marks{
+      position:absolute;
+      left:8px; right:8px;
+      top: 16px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+    }
+    .mark{
+      width:12px;height:12px;
+      border-radius: 4px;
+      background:#111;
+      opacity:.1;
+      cursor:pointer;
+    }
+    .mark.active{
+      opacity:1;
+      background:#111;
+    }
+    .thumb{
+      position:absolute;
+      top: 10px;
+      width:24px;height:24px;
+      border-radius: 8px;
+      background:#fff;
+      border:2px solid #111;
+      box-shadow: 0 8px 20px rgba(0,0,0,.12);
+      transform: translateX(-50%);
+      cursor:grab;
+    }
+
+    /* 风控提示条（黄灯示例，可切换颜色） */
+    .riskTip{
+      display:flex;
+      align-items:flex-start;
+      gap:10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border:1px solid #f0e2b3;
+      background:#fff6d6;
+      color:#4b3d13;
+      font-weight:800;
+      line-height:1.35;
+      margin: 10px 0 12px;
+    }
+    .lamp{
+      width:18px;height:18px;border-radius:50%;
+      background: var(--yellow);
+      box-shadow: 0 0 0 3px rgba(246,195,67,.25);
+      flex:0 0 auto;
+      margin-top:2px;
+    }
+    .riskTip small{
+      display:block;
+      font-weight:800;
+      color:#6b5a1a;
+      margin-top:4px;
+    }
+
+    .stats{
+      border-top:1px solid var(--line);
+      padding-top:10px;
+      margin-top:10px;
+    }
+    .statRow{
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      margin: 6px 0;
+      font-variant-numeric: tabular-nums;
+    }
+    .statRow .k{ color:var(--muted); font-weight:900; }
+    .statRow .v{ font-weight:1000; }
+
+    .cta{
+      border:none;
+      width:100%;
+      padding: 14px 14px;
+      border-radius: 14px;
+      color:#fff;
+      font-size: 18px;
+      font-weight:1000;
+      margin-top:10px;
+    }
+    .cta.buy{ background: var(--green); }
+    .cta.sell{ background: var(--red); }
+
+    /* 持仓/委托列表 */
+    .section{
+      margin-top: 14px;
+    }
+    .segTabs{
+      display:flex;
+      gap:14px;
+      align-items:center;
+      padding: 10px 4px 8px;
+      font-weight:1000;
+    }
+    .seg{
+      color:var(--muted);
+      position:relative;
+      padding: 8px 2px;
+    }
+    .seg.active{ color:var(--text); }
+    .seg.active::after{
+      content:"";
+      position:absolute;
+      left:0; right:0; bottom:0;
+      height:3px;
+      border-radius: 999px;
+      background: #f6c343;
+    }
+    .listCard{
+      background:#fff;
+      border:1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+    }
+    .posItem{
+      padding: 12px;
+      border-top:1px solid var(--line);
+    }
+    .posItem:first-child{ border-top:none; }
+    .posTop{
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:10px;
+    }
+    .posTitle{
+      display:flex; gap:8px; align-items:center;
+      font-weight:1000;
+    }
+    .sideTag{
+      padding:2px 6px;
+      border-radius:8px;
+      font-size:12px;
+      font-weight:1000;
+      border:1px solid var(--line);
+      background: #fff;
+    }
+    .sideTag.sell{ color: var(--red); border-color: rgba(239,77,92,.35); }
+    .sideTag.buy{ color: var(--green); border-color: rgba(37,185,122,.35); }
+
+    .posPnl{
+      font-size: 26px;
+      font-weight: 1100;
+      color: var(--red);
+      font-variant-numeric: tabular-nums;
+    }
+    .posGrid{
+      display:grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap:10px;
+      margin-top: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+    .mini{
+      color:var(--muted);
+      font-size:12px;
+      font-weight:900;
+    }
+    .big{
+      font-weight:1100;
+      margin-top:2px;
+    }
+    .posActions{
+      display:grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap:10px;
+      margin-top: 12px;
+    }
+    .ghost{
+      border:1px solid var(--line);
+      background:#f7f8fb;
+      border-radius: 12px;
+      padding: 10px 10px;
+      font-weight:1000;
+    }
+
+    /* 底部导航 */
+    .nav{
+      position: fixed;
+      left:0; right:0; bottom:0;
+      background:#fff;
+      border-top: 1px solid var(--line);
+      padding: 10px 16px calc(10px + var(--safe-bottom));
+      display:flex;
+      justify-content:space-around;
+      gap:10px;
+    }
+    .navItem{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:4px;
+      color:var(--muted);
+      font-weight:900;
+      font-size:12px;
+    }
+    .navItem.active{ color:var(--text); }
+
+    /* 弹窗 */
+    .modalMask{
+      position: fixed;
+      inset:0;
+      background: rgba(0,0,0,.35);
+      display:none;
+      align-items:flex-end;
+      justify-content:center;
+      padding: 16px;
+      z-index: 99;
+    }
+    .modal{
+      width: min(420px, 100%);
+      background:#fff;
+      border-radius: 18px;
+      border:1px solid var(--line);
+      box-shadow: var(--shadow);
+      overflow:hidden;
+    }
+    .modalHeader{
+      padding: 12px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+      border-bottom:1px solid var(--line);
+      font-weight:1100;
+    }
+    .modalBody{
+      padding: 12px;
+      max-height: 62vh;
+      overflow:auto;
+    }
+    .search{
+      width:100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border:1px solid var(--line);
+      background:#f7f8fb;
+      font-weight:900;
+      outline:none;
+    }
+    .pairRow{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      padding: 12px 6px;
+      border-bottom:1px solid var(--line);
+      cursor:pointer;
+    }
+    .pairRow:last-child{ border-bottom:none; }
+    .pairRow strong{ font-weight:1100; }
+    .pairRow span{ color:var(--muted); font-weight:900; }
+
+    .addRow{
+      display:flex;
+      gap:8px;
+      margin-top:10px;
+    }
+    .addRow input{
+      flex:1;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border:1px solid var(--line);
+      background:#fff;
+      font-weight:900;
+      outline:none;
+    }
+    .primaryBtn{
+      border:none;
+      background:#111;
+      color:#fff;
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-weight:1100;
+    }
+
+    /* 小屏优化 */
+    @media (max-width: 380px){
+      .grid{ grid-template-columns: 1fr; }
+      .posGrid{ grid-template-columns: 1fr 1fr; }
+      .posActions{ grid-template-columns: 1fr 1fr; }
     }
   </style>
 </head>
 <body>
-
-  <div class="error-popup" id="errorPopup" onclick="closeErrorPopup(event)">
-    <div class="error-popup-content">
-      <div class="error-popup-icon">⚠️</div>
-      <div class="error-popup-title">表单数据错误</div>
-      <div class="error-popup-list" id="errorPopupList"></div>
-      <button class="error-popup-btn" onclick="$('errorPopup').classList.remove('show')">我知道了</button>
-    </div>
-  </div>
-
   <div class="app">
+
     <div class="topbar">
-      <div class="title">MT4 量化终端</div>
-      <button class="btn" onclick="alert('系统设置功能开发中...')">设置</button>
+      <div class="title">模拟交易</div>
+      <button class="btn" id="btnLive">返回实盘</button>
     </div>
 
-    <div class="tabs-wrapper">
-      <div class="tabs">
-        <button class="tab" data-category="forex" onclick="switchMainTab(this); showCategoryPairs('forex')">外汇</button>
-        <button class="tab" data-category="index" onclick="switchMainTab(this); showCategoryPairs('index')">指数</button>
-        <button class="tab" data-category="commodity" onclick="switchMainTab(this); showCategoryPairs('commodity')">大宗商品</button>
-        <button class="tab active" data-category="metal" onclick="switchMainTab(this); showCategoryPairs('metal')">贵金属</button>
-        <button class="tab" data-category="stock" onclick="switchMainTab(this); showCategoryPairs('stock')">股票</button>
-      </div>
+    <div class="tabs">
+      <button class="tab">现货</button>
+      <button class="tab active">U本位</button>
+      <button class="tab">币本位</button>
     </div>
 
     <div class="symRow">
-      <div class="symLeftTime" id="sysTime">--:--:--</div>
-      <div class="symCenter">
+      <div class="symLeft">
         <div class="symName">
-          <span id="symName">XAUUSD</span>
-          <span class="symBadge" onclick="$('pairMask').style.display='flex'">切换品种 ▼</span>
-        </div>
-      </div>
-      <div class="symRight">
-        <button class="iconBtn huge-chart" title="交易日历看板" onclick="openCalendar()">📈</button>
-      </div>
-    </div>
-
-    <div class="main-grid">
-      <div class="col-left">
-        <div class="card">
-          <div class="obTopStats">
-            <div class="obStatItem"><div class="obStatLabel">账户净值 (USD)</div><div class="obStatVal" id="equityVal">--</div></div>
-            <div class="obStatItem"><div class="obStatLabel">可用余额 (USD)</div><div class="obStatVal" id="availMarginStr">--</div></div>
-            <div class="obStatItem"><div class="obStatLabel">日内浮动盈亏</div><div class="obStatVal" id="dailyPnlVal" style="color:var(--text)">--</div></div>
-            <div class="obStatItem"><div class="obStatLabel">日内盈亏率</div><div class="obStatVal" id="dailyPnlPctVal" style="color:var(--text)">--</div></div>
-          </div>
-          
-          <div class="midPrice" id="midPriceText">--</div>
-          <div class="midSub">
-            当前实时买入价 (Bid) <span class="signal-dot green" id="latencySignal" title="获取延迟"></span>
-          </div>
-        </div>
-
-        <div class="sl-calculator">
-          <div class="sl-title">
-            <span>基于当前仓位预估止损额度</span>
-            <span style="color:var(--muted); font-size:0.75rem; font-weight:600">公式: 预付款×杠杆×比例</span>
-          </div>
-          <div style="height:1px; background:var(--line); margin:0.75rem 0;"></div>
-          <div class="sl-row"><span class="k">2% 止损亏损</span><span class="v" id="sl_2">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">3% 止损亏损</span><span class="v" id="sl_3">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">5% 止损亏损</span><span class="v" id="sl_5">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">8% 止损亏损</span><span class="v" id="sl_8">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">10% 止损亏损</span><span class="v" id="sl_10">0.00 USD</span></div>
-          
-          <div style="height:1px; background:var(--line); margin:0.75rem 0;"></div>
-          <div class="sl-row"><span class="k">占用保证金</span><span class="v" id="calcMargin">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">当前设置下每点波动≈</span><span class="v" id="calcPpVal">0.00 USD</span></div>
-          <div class="sl-row"><span class="k">预估强平价格</span><span class="v" id="calcLiq">0.00</span></div>
-        </div>
-      </div>
-
-      <div class="col-right">
-        <div class="card" style="height: 100%; display: flex; flex-direction: column;">
-          <div class="form-header">
-            <div class="chips">
-              <div class="chip primary">全仓模式</div>
-              <div class="chip" id="btnLev" onclick="$('levMask').style.display='flex'">杠杆 20x ▼</div>
-            </div>
-            <div style="color: var(--muted); font-size: 0.8125rem; font-weight: 600;">可用: <span style="color:var(--text);font-weight:800" id="formAvail">--</span></div>
-          </div>
-
-          <div class="form-row" onclick="$('orderTypeMask').style.display='flex'">
-            <label>交易类型</label>
-            <div class="value-text"><span id="orderTypeText">限价止盈止损</span> ▼</div>
-          </div>
-          
-          <div id="dynamicFormArea"></div>
-
-          <div class="range-wrap" style="margin-top: auto;">
-            <div class="range-header">
-              <span>仓位占比 (基于可用余额)</span>
-              <span style="color: var(--text); font-size: 1rem;">
-                <span id="pctText">10</span>% 
-                <span style="font-size: 0.75rem; color: var(--muted); margin-left: 0.25rem;">(<span id="lotsText">0.00</span> 手)</span>
-              </span>
-            </div>
-            <input type="range" id="marginSlider" min="0" max="100" step="1" value="10">
-          </div>
-
-          <div class="cta-group">
-            <button class="cta buy" onclick="initiateOrder('BUY')">买入 / 做多</button>
-            <button class="cta sell" onclick="initiateOrder('SELL')">卖出 / 做空</button>
-          </div>
+          <input type="text" id="symInput" placeholder="输入交易品种如 BTCUSDT" style="font-size:18px;font-weight:900;border:1px solid var(--line);border-radius:8px;padding:4px 8px;width:180px;">
         </div>
       </div>
     </div>
 
-    <div class="bottom-section">
+    <div class="grid">
+      <!-- 交易面板 -->
+      <div class="card order" style="width:100%">
+        <div class="row">
+          <div class="chips">
+            <div class="chip primary">全仓</div>
+            <div class="chip" id="btnLev">20x</div>
+          </div>
+          <div class="label">可用 <span class="val" id="avail">--</span> USDT</div>
+        </div>
+
+        <!-- 交易品种输入 -->
+        <div class="field">
+          <span>交易品种</span>
+          <input type="text" id="tradeSymbol" placeholder="如 BTCUSDT" style="border:none;background:transparent;font-weight:900;text-align:right;width:120px;">
+        </div>
+
+        <div class="field">
+          <span>数量 (手)</span>
+          <input type="number" id="tradeLots" placeholder="0.01" style="border:none;background:transparent;font-weight:900;text-align:right;width:80px;">
+        </div>
+
+        <!-- 滑轮组：仓位比例 -->
+        <div class="wheelWrap">
+          <div class="row" style="margin-bottom:6px;">
+            <div class="label">仓位比例</div>
+            <div class="val"><span id="pctText">75</span>%</div>
+          </div>
+          <div class="wheel" id="wheel">
+            <div class="track"></div>
+            <div class="marks" id="marks"></div>
+            <div class="thumb" id="thumb" aria-label="slider thumb"></div>
+          </div>
+        </div>
+
+        <!-- 风控提示条 -->
+        <div class="riskTip" id="riskTip">
+          <div class="lamp" id="lamp"></div>
+          <div>
+            风险提示：每点波动≈ <span id="perPointMoney">--</span> USDT（<span id="perPointPct">--</span>%）
+            <small>根据仓位比例和杠杆计算</small>
+          </div>
+        </div>
+
+        <div class="stats">
+          <div class="statRow"><span class="k">占用保证金</span><span class="v" id="mLong">-- USDT</span></div>
+          <div class="statRow"><span class="k">强平价格</span><span class="v" id="liqLong">-- USDT</span></div>
+        </div>
+
+        <button class="cta buy" id="btnBuy">买入/做多</button>
+
+        <div class="stats" style="margin-top:14px">
+          <div class="statRow"><span class="k">占用保证金</span><span class="v" id="mShort">-- USDT</span></div>
+          <div class="statRow"><span class="k">强平价格</span><span class="v" id="liqShort">-- USDT</span></div>
+        </div>
+
+        <button class="cta sell" id="btnSell">卖出/做空</button>
+      </div>
+    </div>
+
+    <!-- 持仓/委托 -->
+    <div class="section">
       <div class="segTabs">
-        <div class="seg active" onclick="switchBottomTab('positions')">持有仓位 (0)</div>
-        <div class="seg" onclick="switchBottomTab('orders')">当前委托 (0)</div>
+        <div class="seg active" id="segPos" onclick="switchTab('positions')">持有仓位 (0)</div>
+        <div class="seg" id="segOrd" onclick="switchTab('orders')">历史成交 (0)</div>
       </div>
-      
-      <div class="listCard active" id="list-positions">
-        <div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无持仓</div>
-      </div>
-      
-      <div class="listCard" id="list-orders">
-        <div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无当前委托挂单</div>
-      </div>
+
+      <div class="listCard" id="list"></div>
     </div>
+
   </div>
 
-  <!-- 弹窗部分 -->
-  <div class="modalMask" id="quizMask" onclick="closeModal(event, 'quizMask')">
+  <!-- 底部导航 -->
+  <div class="nav">
+    <div class="navItem">行情</div>
+    <div class="navItem active">交易</div>
+    <div class="navItem">资产</div>
+  </div>
+
+  <!-- 杠杆弹窗 -->
+  <div class="modalMask" id="levMask">
     <div class="modal">
-      <div class="modalHeader"><span>执行前风控检查</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('quizMask').style.display='none'">✕</button></div>
-      <div class="modalBody">
-        <div class="quiz-item">
-          <div class="quiz-q">1. 该笔交易是否顺应大级别趋势？</div>
-          <div class="quiz-opts">
-            <div class="quiz-opt" onclick="selectQuiz(this, 1, 'A')">A. 是的，顺势</div>
-            <div class="quiz-opt" onclick="selectQuiz(this, 1, 'B')">B. 否，逆势博弈</div>
-          </div>
-        </div>
-        <div class="quiz-item">
-          <div class="quiz-q">2. 盈亏比是否达到你的交易系统标准？</div>
-          <div class="quiz-opts">
-            <div class="quiz-opt" onclick="selectQuiz(this, 2, 'A')">A. 已达标</div>
-            <div class="quiz-opt" onclick="selectQuiz(this, 2, 'B')">B. 未达标</div>
-          </div>
-        </div>
-        <div class="quiz-item">
-          <div class="quiz-q">3. 当前是否属于情绪化报复性交易？</div>
-          <div class="quiz-opts">
-            <div class="quiz-opt" onclick="selectQuiz(this, 3, 'A')">A. 情绪稳定，非报复</div>
-            <div class="quiz-opt" onclick="selectQuiz(this, 3, 'B')">B. 是的，急于回本</div>
-          </div>
-        </div>
-        <button class="cta" style="background:var(--text); color:#fff; width:100%" onclick="confirmOrderAfterQuiz()">确认并发送订单</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="modalMask" id="modifyMask" onclick="closeModal(event, 'modifyMask')">
-    <div class="modal">
-      <div class="modalHeader"><span>高级订单管理</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('modifyMask').style.display='none'">✕</button></div>
-      <div class="modalBody">
-        <div style="margin-bottom: 1.25rem; padding: 1rem; border: 1px solid var(--line); border-radius: 0.75rem;">
-          <div class="form-row" style="margin-bottom: 0.75rem;">
-            <label style="color:var(--green)">止盈触发价 (T/P)</label>
-            <input type="number" id="modTpPrice" placeholder="输入价格">
-          </div>
-          <div class="range-wrap" style="margin: 0;">
-            <div class="range-header"><span>止盈平仓数量</span><span style="color:var(--text);font-weight:800" id="tpLotsText">1.00 手</span></div>
-            <input type="range" id="tpLotsSlider" min="0.01" max="1.00" step="0.01" value="1.00">
-          </div>
-        </div>
-
-        <div style="margin-bottom: 1.25rem; padding: 1rem; border: 1px solid var(--line); border-radius: 0.75rem;">
-          <div class="form-row" style="margin-bottom: 0.75rem;">
-            <label style="color:var(--red)">止损触发价 (S/L)</label>
-            <input type="number" id="modSlPrice" placeholder="输入价格">
-          </div>
-          <div class="range-wrap" style="margin: 0;">
-            <div class="range-header"><span>止损平仓数量</span><span style="color:var(--text);font-weight:800" id="slLotsText">1.00 手</span></div>
-            <input type="range" id="slLotsSlider" min="0.01" max="1.00" step="0.01" value="1.00">
-          </div>
-        </div>
-
-        <button class="cta" style="background:var(--text); color:#fff; width:100%" onclick="submitModifyOrder()">保存修改</button>
-        <button class="lock-btn" onclick="executeLockPosition()">🔒 一键对冲锁仓</button>
-      </div>
-    </div>
-  </div>
-
-  <div class="modalMask" id="calendarMask" onclick="closeModal(event, 'calendarMask')">
-    <div class="modal" style="height: 80vh;">
       <div class="modalHeader">
-        <span>当月交易日历</span>
-        <button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('calendarMask').style.display='none'">✕</button>
+        <span>调整杠杆</span>
+        <button class="btn" id="closeLev">关闭</button>
       </div>
       <div class="modalBody">
-        <div style="text-align:center; font-weight:800; font-size:1.125rem; margin-bottom:1rem;" id="calTitle">2024 年 5 月</div>
-        <div class="cal-header">
-          <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
+        <div class="row" style="margin-bottom:6px">
+          <div class="label">当前杠杆</div>
+          <div class="val"><span id="levVal">20</span>x</div>
         </div>
-        <div class="cal-grid" id="calGrid"></div>
-      </div>
-    </div>
-  </div>
 
-  <div class="modalMask" id="levMask" onclick="closeModal(event, 'levMask')">
-    <div class="modal">
-      <div class="modalHeader"><span>调整杠杆倍数</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('levMask').style.display='none'">✕</button></div>
-      <div class="modalBody">
-        <div style="display:flex; justify-content:space-between; margin-bottom:1rem;">
-          <span style="color:var(--muted); font-weight:700;">当前选择杠杆</span>
-          <span style="font-size:1.125rem; font-weight:800;"><span id="levTextModal">20</span>x</span>
+        <div class="wheelWrap" style="margin-top:0">
+          <div class="wheel" id="levWheel">
+            <div class="track"></div>
+            <div class="marks" id="levMarks"></div>
+            <div class="thumb" id="levThumb"></div>
+          </div>
+          <div class="mini" style="margin-top:10px">
+            * 选择超过 10x 杠杆会增加强平风险，请注意风险。
+          </div>
         </div>
-        <div class="range-wrap" style="margin-top:0;">
-          <input type="range" id="levSlider" min="1" max="100" step="1" value="20">
-        </div>
-        <div style="color:#d97706; font-size:0.75rem; font-weight:700; margin-bottom:1.25rem;">* 提示：调整杠杆会重算占用资金及止损额度估值。</div>
-        <button class="cta" style="background:var(--text); color:#fff; width:100%" onclick="$('levMask').style.display='none'">确认修改</button>
-      </div>
-    </div>
-  </div>
 
-  <div class="modalMask" id="orderTypeMask" onclick="closeModal(event, 'orderTypeMask')">
-    <div class="modal">
-      <div class="modalHeader"><span>选择交易类型</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('orderTypeMask').style.display='none'">✕</button></div>
-      <div class="modalBody" style="padding: 0;">
-        <div class="select-item" onclick="setOrderType('market', '市价')">市价</div>
-        <div class="select-item" onclick="setOrderType('market_tpsl', '市价止盈止损')">市价止盈止损</div>
-        <div class="select-item" onclick="setOrderType('limit', '限价单')">限价单</div>
-        <div class="select-item active" onclick="setOrderType('limit_tpsl', '限价止盈止损')">限价止盈止损</div>
-      </div>
-    </div>
-  </div>
-
-  <div class="modalMask" id="pairMask" onclick="closeModal(event, 'pairMask')">
-    <div class="modal">
-      <div class="modalHeader"><span id="pairModalTitle">切换交易品种</span><button class="btn" style="border:none; padding:0.25rem 0.5rem;" onclick="$('pairMask').style.display='none'">✕</button></div>
-      <div class="modalBody" id="pairListContainer">
-        <!-- JS 动态生成 -->
+        <button class="cta" style="background:#f6c343;color:#222" id="confirmLev">确认</button>
       </div>
     </div>
   </div>
 
   <script>
-    // 全局选择器辅助函数
-    const $ = id => document.getElementById(id);
+    // -----------------------------
+    // 配置
+    // -----------------------------
+    const API_BASE = "";  // 同源，留空则自动使用当前域名
 
-    // 消除 300ms 点击延迟
-    document.addEventListener('touchstart', function(){}, {passive: true});
+    // -----------------------------
+    // 状态（合并 UI 状态 + MT4 数据）
+    // -----------------------------
+    const state = {
+      // 品种列表
+      pairs: [
+        { sym:"BTCUSDT", last:65807.2, chg:-1.93 },
+        { sym:"ETHUSDT", last:1934.09, chg:-3.61 },
+        { sym:"BCHUSDT", last:438.62, chg:-3.06 },
+        { sym:"XRPUSDT", last:1.3430, chg:-3.87 },
+        { sym:"LTCUSDT", last:53.16, chg:-2.58 },
+      ],
+      activeSym: "ETHUSDT",
 
-    // 暴露全局状态
-    window.quantState = {
-      equity: 0,         
-      availMargin: 0,
-      price: 0,           
-      contractSize: 100,        
-      pointSize: 0.01,          
-      marginPct: 10,
-      leverage: 20,             
-      lots: 0,
-      orderType: 'limit_tpsl',
-      pendingSide: '' 
-    };
-
-    let quizAnswers = {};
-
-    // 格式化数字
-    function fmtNum(n, d) { return parseFloat(n).toFixed(d); }
-
-    // 暴露全局 API
-    window.API = {
-      // 1. 发送下单指令
-      submitOrder: async function(symbol, side, type, marginPct, leverage, calculatedLots, params) {
-        console.log("【API】执行下单:", {symbol, side, type, marginPct, leverage, calculatedLots, ...params});
-        
-        try {
-          const response = await fetch('/api/v1/order', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              symbol,
-              side,
-              type,
-              marginPct,
-              leverage,
-              lots: calculatedLots,
-              ...params
-            })
-          });
-          const data = await response.json();
-          return data;
-        } catch (error) {
-          console.error("下单失败:", error);
-          alert("网络请求失败，请检查连接");
-          return { success: false };
-        }
+      // MT4 账户数据（从 API 拉取）
+      mt4: {
+        account: "",
+        balance: 0,
+        equity: 0,
+        margin: 0,
+        free_margin: 0,
+        margin_level: 0,
+        floating_pnl: 0,
+        leverage_used: 0,
+        risk_flags: "",
+        daily_pnl: 0,
+        daily_return: 0,
+        exposure_notional: 0,
+        exposure_signal: "green",
+        positions: [],
+        trades: [],  // 历史成交
       },
-      
-      // 2. 修改持仓订单 (分批止盈止损)
-      modifyPosition: async function(positionId, tpPrice, tpLots, slPrice, slLots) {
-        console.log("【API】修改持仓:", {positionId, tpPrice, tpLots, slPrice, slLots});
-        
-        try {
-          const response = await fetch('/api/v1/position/modify', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ positionId, tpPrice, tpLots, slPrice, slLots })
-          });
-          return await response.json();
-        } catch (error) {
-          console.error("修改持仓失败:", error);
-          return { success: false };
+
+      // 当前tab: positions-持仓, orders-历史成交
+      currentTab: "positions",
+
+      // UI 状态
+      pct: 75,          // 仓位比例（滑轮选择 0-100）
+      leverage: 20,     // 杠杆
+      risk: {
+        long: { margin: 2274.10, liq: 1854.81, perPoint: 43.40, perPct: 1.17 },
+        short:{ margin: 2786.06, liq: 2180.96, perPoint: 27.80, perPct: 0.75 },
+        tipLevel: "yellow"
+      }
+    };
+
+    // -----------------------------
+    // API 获取 MT4 实时数据
+    // -----------------------------
+    async function fetchMT4Data() {
+      try {
+        // 从 Flask 获取最新状态数据
+        const resp = await fetch(API_BASE + "/api/latest_status");
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        if (data) {
+          // 更新 MT4 数据
+          state.mt4.account = data.account || "";
+          state.mt4.balance = data.balance || 0;
+          state.mt4.equity = data.equity || 0;
+          state.mt4.margin = data.margin || 0;
+          state.mt4.free_margin = data.free_margin || 0;
+          state.mt4.margin_level = data.margin_level || 0;
+          state.mt4.daily_pnl = data.daily_pnl || 0;
+          state.mt4.daily_return = data.daily_return || 0;
+          state.mt4.exposure_notional = data.exposure_notional || 0;
+          state.mt4.exposure_signal = data.exposure_signal || "green";
+          state.mt4.floating_pnl = data.floating_pnl || 0;
+          state.mt4.leverage_used = data.leverage_used || 0;
+          state.mt4.risk_flags = data.risk_flags || "";
+
+          // 更新持仓数据
+          state.mt4.positions = data.positions || [];
+
+          console.log("[MT4 Data] equity=", state.mt4.equity, " margin_level=", state.mt4.margin_level, " leverage_used=", state.mt4.leverage_used, " positions=", state.mt4.positions.length);
+
+          // 渲染持仓列表
+          renderPositions();
+
+          // 重新计算风控
+          calcRiskFromMT4();
         }
-      },
-      
-      // 3. 锁仓接口
-      lockPosition: async function(positionId) {
-        console.log("【API】一键锁仓:", {positionId});
-        
-        try {
-          const response = await fetch('/api/v1/position/lock', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ positionId })
-          });
-          return await response.json();
-        } catch (error) {
-          console.error("锁仓失败:", error);
-          return { success: false };
-        }
-      },
-      
-      // 4. 获取历史日历盈亏数据
-      getCalendarPnL: async function(year, month) {
-        console.log("【API】获取日历数据:", year, month);
-        
-        try {
-          const response = await fetch(`/api/v1/calendar?year=${year}&month=${month}`);
-          return await response.json();
-        } catch (error) {
-          console.error("获取日历失败:", error);
-          return {};
-        }
+      } catch(e) {
+        console.error("[fetchMT4Data] error:", e);
       }
-    };
-
-    // 暴露全局函数供 HTML 调用
-    window.updateCalculations = function() {
-      const { marginPct, leverage, price, contractSize, pointSize, equity, availMargin } = window.quantState;
-      
-      // 更新滑轮最大值为可用余额
-      const marginSlider = $('marginSlider');
-      if(marginSlider) {
-          // 确保 max 至少为 1，防止为 0 时无法拖动
-          const maxVal = Math.floor(availMargin > 0 ? availMargin : 100);
-          if(parseFloat(marginSlider.max) !== maxVal) {
-              marginSlider.max = maxVal;
-          }
-      }
-
-      // 获取当前滑轮值（作为使用保证金金额）
-      // 注意：这里我们复用 marginPct 变量来存储滑轮的值（即 Used Margin Amount）
-      const usedMargin = marginPct; 
-      
-      // 计算手数
-      // Lots = (UsedMargin * Leverage) / (ContractSize * Price)
-      let calculatedLots = 0;
-      if (price > 0 && contractSize > 0) {
-          calculatedLots = (usedMargin * leverage) / (contractSize * price);
-      }
-      
-      // 简单的手数计算保护
-      if (!isFinite(calculatedLots) || calculatedLots < 0) calculatedLots = 0;
-      calculatedLots = Math.floor(calculatedLots * 100) / 100; 
-      
-      window.quantState.lots = calculatedLots;
-
-      // 更新 UI 显示
-      $('pctText').innerText = usedMargin; // 显示使用保证金金额
-      $('lotsText').innerText = calculatedLots.toFixed(2);
-
-      // 计算名义价值用于止损估算
-      const notional = calculatedLots * contractSize * price;
-
-      [2, 3, 5, 8, 10].forEach(pct => {
-        const el = $(`sl_${pct}`);
-        if(el) el.innerText = (notional * (pct / 100)).toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
-      });
-
-      const perPointMoney = calculatedLots * contractSize * pointSize;
-      const liqPrice = calculatedLots > 0 ? Math.max(0, price - (equity / (calculatedLots * contractSize))) : 0;
-
-      $('calcMargin').innerText = usedMargin.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
-      $('calcPpVal').innerText = perPointMoney.toFixed(2) + " USD";
-      $('calcLiq').innerText = calculatedLots > 0 ? liqPrice.toLocaleString('en-US', {minimumFractionDigits:2}) : "0.00";
-    };
-
-    window.setOrderType = function(typeCode, typeName) {
-      window.quantState.orderType = typeCode;
-      $('orderTypeText').innerText = typeName;
-      $('orderTypeMask').style.display = 'none';
-      
-      document.querySelectorAll('#orderTypeMask .select-item').forEach(el => {
-        el.classList.remove('active');
-        if(el.innerText === typeName) el.classList.add('active');
-      });
-
-      const area = $('dynamicFormArea');
-      const renderInput = (lbl, placeholder, id) => `
-        <div class="form-row" style="cursor:text">
-          <label>${lbl}</label><input type="number" id="${id}" placeholder="${placeholder}">
-        </div>`;
-      
-      let html = '';
-      if(typeCode === 'market') { html += renderInput('点差', '0.00', 'inpSpread'); } 
-      else if(typeCode === 'market_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); html += renderInput('点差', '0.00', 'inpSpread'); } 
-      else if(typeCode === 'limit') { html += renderInput('触发价', '0.00', 'inpPrice'); }
-      else if(typeCode === 'limit_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); html += renderInput('触发价', '0.00', 'inpPrice'); }
-      
-      // html += renderInput('有效时间 (分钟)', '输入过期分钟数');
-      area.innerHTML = html;
-    };
-
-    window.validateFormInputs = function() {
-      const area = $('dynamicFormArea');
-      const inputs = area.querySelectorAll('input');
-      const labels = area.querySelectorAll('label');
-      const errors = [];
-
-      inputs.forEach((input, index) => {
-        // 对于可选字段可以放宽限制，这里暂时保持非空检查
-        // 实际交易中 TP/SL 可能是可选的
-      });
-      return errors;
-    };
-
-    window.initiateOrder = function(side) {
-      // 简单校验
-      if(window.quantState.lots <= 0) {
-          alert("计算手数为0，请调整仓位或杠杆");
-          return;
-      }
-
-      window.quantState.pendingSide = side;
-      quizAnswers = {};
-      document.querySelectorAll('.quiz-opt').forEach(el => el.classList.remove('selected'));
-      $('quizMask').style.display = 'flex';
-    };
-
-    window.selectQuiz = function(el, qIndex, answer) {
-      const parent = el.parentElement;
-      parent.querySelectorAll('.quiz-opt').forEach(opt => opt.classList.remove('selected'));
-      el.classList.add('selected');
-      quizAnswers[qIndex] = answer;
-    };
-
-    window.confirmOrderAfterQuiz = function() {
-      if(Object.keys(quizAnswers).length < 3) return alert('请先完成所有风控自检题！');
-      $('quizMask').style.display = 'none';
-      const formData = window.getFormInputs();
-      
-      window.API.submitOrder(
-        $('symName').innerText, 
-        window.quantState.pendingSide, 
-        window.quantState.orderType, 
-        window.quantState.marginPct, 
-        window.quantState.leverage, 
-        window.quantState.lots,
-        { quiz: quizAnswers, ...formData }
-      ).then((res) => {
-        if(res.success) {
-            alert(`指令发送成功！`);
-            // 刷新订单列表
-            window.refreshData(); 
-        } else {
-            alert("发送失败: " + res.message);
-        }
-      });
-    };
-
-    window.getFormInputs = function() {
-      const area = $('dynamicFormArea');
-      const inputs = area.querySelectorAll('input');
-      const data = {};
-      inputs.forEach((input) => {
-        if(input.id) data[input.id] = input.value;
-      });
-      return data;
-    };
-
-    window.openModifyOrderPanel = function(ticket, lots) {
-      // 这里简化处理，实际应该传入当前持仓信息
-      // 暂时假设只有一个持仓被选中修改
-      const currentLots = lots || 1.0;
-      const tpSlider = $('tpLotsSlider');
-      const slSlider = $('slLotsSlider');
-      tpSlider.max = currentLots; tpSlider.value = currentLots;
-      slSlider.max = currentLots; slSlider.value = currentLots;
-      $('tpLotsText').innerText = currentLots.toFixed(2) + " 手";
-      $('slLotsText').innerText = currentLots.toFixed(2) + " 手";
-      
-      // 存储当前修改的Ticket
-      window.currentModifyTicket = ticket;
-      
-      $('modifyMask').style.display = 'flex';
-    };
-
-    window.submitModifyOrder = function() {
-      const tpP = $('modTpPrice').value; const tpL = $('tpLotsSlider').value;
-      const slP = $('modSlPrice').value; const slL = $('slLotsSlider').value;
-      
-      if(!window.currentModifyTicket) return;
-      
-      window.API.modifyPosition(window.currentModifyTicket, tpP, tpL, slP, slL).then((res) => {
-        if(res.success) {
-            alert("修改指令已发送");
-            $('modifyMask').style.display = 'none';
-        } else {
-            alert("修改失败: " + res.message);
-        }
-      });
-    };
-
-    window.executeLockPosition = function() {
-      // 锁仓逻辑简化，直接发送锁仓请求
-      if(!window.currentModifyTicket) return;
-      
-      if (confirm('警告：一键锁仓将开立相同手数的反向订单对冲，是否继续？')) {
-        window.API.lockPosition(window.currentModifyTicket).then((res) => {
-          alert(res.message);
-          $('modifyMask').style.display = 'none';
-        });
-      }
-    };
-
-    window.openCalendar = function() {
-      $('calendarMask').style.display = 'flex';
-      window.renderCalendar();
-    };
-
-    window.renderCalendar = async function() {
-      const grid = $('calGrid');
-      grid.innerHTML = '';
-      const now = new Date();
-      $('calTitle').innerText = `${now.getFullYear()} 年 ${now.getMonth()+1} 月`;
-      
-      // 简单日历生成，未严格对齐星期
-      for(let i=0; i<3; i++) grid.innerHTML += `<div class="cal-day empty"></div>`;
-      
-      const data = await window.API.getCalendarPnL(now.getFullYear(), now.getMonth()+1);
-      
-      for(let i=1; i<=31; i++) {
-        let pnlStr = '';
-        if(data[i]) {
-          const val = parseFloat(data[i]);
-          const color = val > 0 ? 'var(--green)' : 'var(--red)';
-          const sign = val > 0 ? '+' : '';
-          pnlStr = `<div class="cal-pnl" style="color:${color}">${sign}${val}</div>`;
-        }
-        grid.innerHTML += `
-          <div class="cal-day">
-            <div class="cal-date">${i}</div>
-            ${pnlStr}
-          </div>
-        `;
-      }
-    };
-
-    window.onload = () => {
-      window.setOrderType('limit_tpsl', '限价止盈止损');
-      const marginSlider = $('marginSlider');
-      if(marginSlider) {
-        marginSlider.style.setProperty('--track-fill', marginSlider.value + '%');
-        marginSlider.oninput = function() {
-          window.quantState.marginPct = parseInt(this.value);
-          this.style.setProperty('--track-fill', this.value + '%');
-          window.updateCalculations();
-        };
-      }
-      const levSlider = $('levSlider');
-      if(levSlider) {
-        levSlider.style.setProperty('--track-fill', (levSlider.value / levSlider.max * 100) + '%');
-        levSlider.oninput = function() {
-          window.quantState.leverage = parseInt(this.value);
-          this.style.setProperty('--track-fill', (this.value / this.max * 100) + '%');
-          $('levTextModal').innerText = window.quantState.leverage;
-          $('btnLev').innerText = `杠杆 ${window.quantState.leverage}x ▼`;
-          window.updateCalculations();
-        };
-      }
-      window.updateCalculations();
-      
-      // 启动自动刷新
-      setInterval(refreshData, 3000);
-      refreshData();
-    };
-
-    window.switchMainTab = function(el) { document.querySelectorAll('.tabs .tab').forEach(t => t.classList.remove('active')); el.classList.add('active'); };
-    window.switchBottomTab = function(target) {
-      document.querySelectorAll('.segTabs .seg').forEach(el => el.classList.remove('active'));
-      event.target.classList.add('active');
-      const listPos = $('list-positions');
-      const listOrd = $('list-orders');
-      if(listPos) listPos.style.display = (target === 'positions' ? 'block' : 'none');
-      if(listOrd) listOrd.style.display = (target === 'orders' ? 'block' : 'none');
-    };
-    window.closeModal = function(e, id) { if(e.target.id === id) $(id).style.display = 'none'; };
-    window.closeErrorPopup = function(e) { if(e.target.id === 'errorPopup') $('errorPopup').classList.remove('show'); };
-
-    const categoryPairs = {
-      'forex': [
-        { name: 'USDCHF', price: 0.8840 }, { name: 'GBPUSD', price: 1.2640 }, { name: 'EURUSD', price: 1.0850 },
-        { name: 'USDJPY', price: 149.50 }, { name: 'USDCAD', price: 1.3580 }, { name: 'AUDUSD', price: 0.6520 },
-        { name: 'EURGBP', price: 0.8580 }, { name: 'EURAUD', price: 1.6533 }, { name: 'EURCHF', price: 0.9050 },
-        { name: 'EURJPY', price: 162.74 }, { name: 'GBPCHF', price: 1.0418 }, { name: 'CADJPY', price: 115.48 },
-        { name: 'GBPJPY', price: 210.35 }, { name: 'AUDNZD', price: 1.1918 }, { name: 'AUDCAD', price: 0.9568 },
-        { name: 'AUDCHF', price: 0.5473 }, { name: 'AUDJPY', price: 110.51 }, { name: 'CHFJPY', price: 201.88 },
-        { name: 'EURNZD', price: 1.9707 }, { name: 'EURCAD', price: 1.5822 }, { name: 'CADCHF', price: 0.5719 },
-        { name: 'NZDJPY', price: 92.715 }, { name: 'NZDUSD', price: 0.5872 }, { name: 'GBPAUD', price: 1.9032 },
-        { name: 'GBPCAD', price: 1.8213 }, { name: 'GBPNZD', price: 2.2686 }, { name: 'NZDCAD', price: 0.8027 },
-        { name: 'NZDCHF', price: 0.4591 }, { name: 'USDSGD', price: 1.2805 }, { name: 'USDHKD', price: 7.8190 },
-        { name: 'USDCNH', price: 6.9147 }
-      ],
-      'index': [
-        { name: 'U30USD', price: 47836.1 }, { name: 'NASUSD', price: 24922.8 }, { name: 'SPXUSD', price: 6803.72 },
-        { name: '100GBP', price: 10428.9 }, { name: 'D30EUR', price: 23822.2 }, { name: 'E50EUR', price: 5773.4 },
-        { name: 'H33HKD', price: 25503.1 }
-      ],
-      'commodity': [
-        { name: 'UKOUSD', price: 87.358 }, { name: 'USOUSD', price: 84.290 }, { name: 'XNGUSD', price: 2.85 },
-        { name: 'XCUUSD', price: 3.85 }, { name: 'XPTUSD', price: 980.50 }, { name: 'XPDUSD', price: 1020.30 }
-      ],
-      'metal': [
-        { name: 'XAGUSD', price: 82.764 }, { name: 'XAUUSD', price: 5081.60 }, { name: 'XAUAUD', price: 3580.20 },
-        { name: 'XAGAUD', price: 43.80 }
-      ],
-      'crypto': [
-        { name: 'BTCUSD', price: 70594 }, { name: 'BCHUSD', price: 456.94 }, { name: 'RPLUSD', price: 1.4003 },
-        { name: 'LTCUSD', price: 55.28 }, { name: 'ETHUSD', price: 2061.8 }, { name: 'XMRUSD', price: 357.28 },
-        { name: 'BNBUSD', price: 641.10 }, { name: 'SOLUSD', price: 87.506 }, { name: 'LNKUSD', price: 9.123 },
-        { name: 'XSIUSD', price: 0.201 }, { name: 'DOGUSD', price: 0.0933 }, { name: 'ADAUSD', price: 0.2673 },
-        { name: 'AVEUSD', price: 116.35 }, { name: 'DSHUSD', price: 34.063 }
-      ],
-      'stock': [
-        { name: 'AAPL', price: 260.39 }, { name: 'AMZN', price: 218.76 }, { name: 'BABA', price: 130.22 },
-        { name: 'GOOGL', price: 301.18 }, { name: 'META', price: 660.93 }, { name: 'MSFT', price: 410.64 },
-        { name: 'NFLX', price: 99.14 }, { name: 'NVDA', price: 178.51 }, { name: 'TSLA', price: 405.46 },
-        { name: 'ABBV', price: 232.09 }, { name: 'ABNB', price: 135.71 }, { name: 'ABT', price: 110.86 },
-        { name: 'ADBE', price: 281.64 }, { name: 'AMD', price: 198.97 }, { name: 'AVGO', price: 332.70 },
-        { name: 'C', price: 108.86 }, { name: 'CRM', price: 201.29 }, { name: 'DIS', price: 102.35 },
-        { name: 'GS', price: 835.15 }, { name: 'INTC', price: 45.80 }, { name: 'JNJ', price: 239.52 },
-        { name: 'MA', price: 524.28 }, { name: 'MCD', price: 327.32 }, { name: 'KO', price: 76.91 },
-        { name: 'MMM', price: 156.12 }, { name: 'NIO', price: 4.56 }, { name: 'PLTR', price: 152.50 },
-        { name: 'SHOP', price: 134.68 }, { name: 'TSM', price: 344.40 }, { name: 'V', price: 319.47 }
-      ]
-    };
-    const categoryNames = { 'forex': '外汇', 'index': '指数', 'commodity': '大宗商品', 'metal': '贵金属', 'crypto': '虚拟货币', 'stock': '股票' };
-
-    let quoteInterval;
-
-    window.showCategoryPairs = function(category) {
-      const container = $('pairListContainer');
-      const title = $('pairModalTitle');
-      const pairs = categoryPairs[category] || [];
-      title.innerText = '选择' + (categoryNames[category] || '交易品种');
-      let html = '';
-      pairs.forEach(pair => {
-        html += `<div class="select-item" onclick="setSymbol('${pair.name}', ${pair.price})">${pair.name}</div>`;
-      });
-      container.innerHTML = html;
-      $('pairMask').style.display = 'flex';
-    };
-
-    window.setSymbol = function(name, price) {
-      $('symName').innerText = name; 
-      window.quantState.price = price;
-      $('midPriceText').innerText = price.toFixed(name === 'XAUUSD' ? 2 : 4);
-      $('pairMask').style.display = 'none';
-      window.updateCalculations();
-      
-      // Start quote polling
-      if(quoteInterval) clearInterval(quoteInterval);
-      window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {}); // Initial request
-      quoteInterval = setInterval(() => {
-          window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {});
-      }, 1000);
-    };
-    
-    // 自动刷新数据
-    async function refreshData() {
-        // 更新系统时间
-        const now = new Date();
-        const timeStr = now.getFullYear() + '-' +
-            String(now.getMonth()+1).padStart(2, '0') + '-' +
-            String(now.getDate()).padStart(2, '0') + ' ' +
-            String(now.getHours()).padStart(2, '0') + ':' +
-            String(now.getMinutes()).padStart(2, '0') + ':' +
-            String(now.getSeconds()).padStart(2, '0');
-        const timeEl = $('sysTime');
-        if(timeEl) timeEl.innerText = timeStr;
-
-        // 记录性能开始时间
-        const startTime = performance.now();
-        
-        try {
-            const res = await fetch('/api/latest_status');
-            
-            if(!res.ok) throw new Error(`HTTP ${res.status}`);
-            
-            const data = await res.json();
-            
-            // 记录性能结束时间并打印日志 (性能监控)
-            const endTime = performance.now();
-            console.log(`[Perf] RefreshData took ${(endTime - startTime).toFixed(2)}ms`);
-
-            if(data) {
-                // 更新账户数据
-                const equity = data.equity || 0;
-                const freeMargin = data.free_margin || 0;
-                
-                window.quantState.equity = equity;
-                window.quantState.availMargin = freeMargin;
-                
-                // 更新滑轮 max
-                const marginSlider = $('marginSlider');
-                if(marginSlider) {
-                    const maxVal = Math.floor(freeMargin > 0 ? freeMargin : 100);
-                    if(parseFloat(marginSlider.max) !== maxVal) {
-                        marginSlider.max = maxVal;
-                    }
-                }
-                
-                $('equityVal').innerText = fmtNum(equity, 2);
-                $('availMarginStr').innerText = fmtNum(freeMargin, 2);
-                $('formAvail').innerText = fmtNum(freeMargin, 2);
-                
-                $('dailyPnlVal').innerText = (data.daily_pnl > 0 ? '+' : '') + fmtNum(data.daily_pnl || 0, 2);
-                $('dailyPnlVal').style.color = (data.daily_pnl >= 0 ? 'var(--green)' : 'var(--red)');
-                
-                $('dailyPnlPctVal').innerText = (data.daily_return > 0 ? '+' : '') + fmtNum(data.daily_return || 0, 2) + '%';
-                $('dailyPnlPctVal').style.color = (data.daily_return >= 0 ? 'var(--green)' : 'var(--red)');
-                
-                // 更新持仓列表
-                updatePositionsList(data.positions || []);
-                
-                // 尝试从持仓或历史数据更新当前价格（如果有）
-                let priceUpdated = false;
-                
-                // 优先使用最新的 QUOTE_DATA
-                if(data.latest_quote) {
-                    const quote = data.latest_quote;
-                    window.quantState.price = quote.bid;
-                    const currentSym = $('symName').innerText;
-                    $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
-                    priceUpdated = true;
-                    
-                    // 更新信号灯时间戳 (1.5s 阈值)
-                    const nowTs = Math.floor(Date.now() / 1000);
-                    const diff = nowTs - quote.ts;
-                    const dot = $('latencySignal');
-                    if(dot) {
-                        if(diff <= 1.5) { // 用户要求 1.5s
-                            dot.className = 'signal-dot green'; dot.title = '实时 (<1.5s)';
-                        } else if(diff <= 10) {
-                            dot.className = 'signal-dot yellow'; dot.title = '延迟 (1.5-10s)';
-                        } else {
-                            dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
-                        }
-                    }
-                }
-
-                if(!priceUpdated && data.positions && data.positions.length > 0) {
-                    // 如果当前选中的 symbol 在持仓中，使用其 current_price
-                    const currentSym = $('symName').innerText;
-                    const pos = data.positions.find(p => p.symbol === currentSym);
-                    if(pos) {
-                        window.quantState.price = pos.current_price;
-                        $('midPriceText').innerText = fmtNum(pos.current_price, currentSym === 'XAUUSD' ? 2 : 4);
-                    }
-                }
-                
-                // 信号灯逻辑 (Bug 3) - 只有在没有 quote 数据时才使用 status 的 ts 作为备选
-                if (!priceUpdated) {
-                    const dot = $('latencySignal');
-                    if(dot && data.ts) {
-                        const nowTs = Math.floor(Date.now() / 1000);
-                        const diff = nowTs - data.ts;
-                        if(diff <= 3) { // Status 频率较低，放宽到 3s
-                            dot.className = 'signal-dot green'; dot.title = '实时 (<3s)';
-                        } else if(diff <= 10) {
-                            dot.className = 'signal-dot yellow'; dot.title = '延迟 (3-10s)';
-                        } else {
-                            dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
-                        }
-                    } else if(dot) {
-                        dot.className = 'signal-dot red'; dot.title = '无信号';
-                    }
-                }
-                
-                window.updateCalculations();
-            }
-        } catch(e) { 
-            console.error("[Refresh Error]", e);
-            // 降级提示
-            const dot = $('latencySignal');
-            if(dot) {
-                dot.className = 'signal-dot red'; 
-                dot.title = '网络连接错误';
-            }
-        }
     }
-    
-    function updatePositionsList(positions) {
-        const list = $('list-positions');
-        if(!positions || positions.length === 0) {
-            list.innerHTML = '<div style="padding: 2.5rem; text-align: center; color: var(--muted); font-weight: 600; font-size: 0.875rem;">暂无持仓</div>';
-            return;
+
+    // -----------------------------
+    // API 获取历史成交记录
+    // -----------------------------
+    async function fetchHistoryTrades() {
+      try {
+        const resp = await fetch(API_BASE + "/api/history_trades?limit=20");
+        if (!resp.ok) return;
+        const data = await resp.json();
+
+        if (data && data.trades) {
+          state.mt4.trades = data.trades;
+
+          // 更新历史成交数量显示
+          const segOrd = $("segOrd");
+          if (segOrd) {
+            segOrd.textContent = `历史成交 (${state.mt4.trades.length})`;
+          }
+
+          // 如果当前是历史成交tab，重新渲染
+          if (state.currentTab === "orders") {
+            renderPositions();
+          }
         }
-        
-        let html = '';
-        positions.forEach(pos => {
-            const sideClass = (pos.side && pos.side.toLowerCase() === 'buy') ? 'buy' : 'sell';
-            const profitColor = pos.profit >= 0 ? 'var(--green)' : 'var(--red)';
-            const profitSign = pos.profit >= 0 ? '+' : '';
-            
-            html += `
+      } catch(e) {
+        console.error("[fetchHistoryTrades] error:", e);
+      }
+    }
+
+    // -----------------------------
+    // Tab 切换
+    // -----------------------------
+    function switchTab(tab) {
+      state.currentTab = tab;
+
+      // 更新tab样式
+      const segPos = $("segPos");
+      const segOrd = $("segOrd");
+      if (tab === "positions") {
+        segPos.classList.add("active");
+        segOrd.classList.remove("active");
+      } else {
+        segPos.classList.remove("active");
+        segOrd.classList.add("active");
+      }
+
+      // 渲染对应内容
+      renderPositions();
+    }
+
+    // -----------------------------
+    // 根据 MT4 数据 + 仓位比例计算风控
+    // -----------------------------
+    function calcRiskFromMT4() {
+      const equity = state.mt4.equity || 5743.61;  // 兜底
+      const margin_level = state.mt4.margin_level || 0;
+      const pct = state.pct;
+      const leverage = state.leverage;
+
+      // ===== 1. 风控灯计算 =====
+      // effective_leverage = margin_level * pct / 100
+      const effective_leverage = margin_level * (pct / 100);
+
+      // 阈值判断（3倍黄，5倍红）
+      let tipLevel = "green";
+      if (effective_leverage >= 5.0) {
+        tipLevel = "red";
+      } else if (effective_leverage >= 3.0) {
+        tipLevel = "yellow";
+      }
+
+      // ===== 2. 每点收益计算 =====
+      // 优先使用 MT4 上报的 exposure_notional（每点波动对账户的盈亏金额）
+      let perPointMoney = 0;
+      let perPointPct = 0;
+
+      const exposureNotional = state.mt4.exposure_notional || 0;
+      if (exposureNotional > 0) {
+        // 直接使用 MT4 上报的每点收益
+        perPointMoney = exposureNotional;
+        perPointPct = (exposureNotional / equity) * 100;
+      } else {
+        // 兜底：自己计算
+        // 每点收益 = 仓位资金 × 杠杆 × 0.0001
+        // 仓位资金 = equity × pct%
+        const positionValue = equity * (pct / 100);
+        perPointMoney = positionValue * leverage * 0.0001;
+        perPointPct = (perPointMoney / equity) * 100;
+      }
+
+      // ===== 3. 计算所需保证金 =====
+      // 保证金 = 仓位价值 / 杠杆
+      // 仓位价值 = equity × pct%
+      const positionValue = equity * (pct / 100);
+      const requiredMargin = positionValue / leverage;
+
+      // ===== 4. 估算强平线（简化）=====
+      // 假设强平保证金比例 100%
+      const liqPrice = equity - requiredMargin;
+
+      // 更新 risk 状态
+      state.risk = {
+        long: {
+          margin: requiredMargin,
+          liq: liqPrice,
+          perPoint: perPointMoney,
+          perPct: perPointPct
+        },
+        short: {
+          margin: requiredMargin,
+          liq: liqPrice,
+          perPoint: perPointMoney,
+          perPct: perPointPct
+        },
+        tipLevel: tipLevel
+      };
+
+      // 更新 UI
+      renderRisk();
+    }
+
+    // -----------------------------
+    // 辅助函数
+    // -----------------------------
+    const $ = (id)=>document.getElementById(id);
+
+    function fmtNum(n, dp=2){
+      const x = Number(n);
+      if (!isFinite(x)) return "--";
+      return x.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    }
+    function fmtPct(p){
+      const x = Number(p);
+      if (!isFinite(x)) return "--";
+      return (x>0?"+":"") + x.toFixed(2) + "%";
+    }
+
+    // -----------------------------
+    // 渲染（把 state 填到 UI）
+    // -----------------------------
+    function renderHeader(){
+      // 显示 MT4 账户可用余额
+      const displayEquity = state.mt4.equity > 0 ? state.mt4.equity : state.equity;
+      $("avail").textContent = fmtNum(displayEquity, 2);
+    }
+
+    function renderRisk(){
+      const r = state.risk;
+      $("mLong").textContent = fmtNum(r.long.margin,2) + " USDT";
+      $("liqLong").textContent = fmtNum(r.long.liq,2) + " USDT";
+      $("ppLong").textContent = fmtNum(r.long.perPoint,2);
+      $("ppLongPct").textContent = fmtNum(r.long.perPct,2);
+
+      $("mShort").textContent = fmtNum(r.short.margin,2) + " USDT";
+      $("liqShort").textContent = fmtNum(r.short.liq,2) + " USDT";
+      $("ppShort").textContent = fmtNum(r.short.perPoint,2);
+      $("ppShortPct").textContent = fmtNum(r.short.perPct,2);
+
+      $("perPointMoney").textContent = fmtNum(r.long.perPoint,1);
+      $("perPointPct").textContent = fmtNum(r.long.perPct,2);
+
+      // 指示灯颜色（绿/黄/红）
+      const lamp = $("lamp");
+      const tip = $("riskTip");
+      if (r.tipLevel === "green"){
+        lamp.style.background = "var(--green)";
+        lamp.style.boxShadow = "0 0 0 3px rgba(37,185,122,.18)";
+        tip.style.background = "#e8fff5";
+        tip.style.borderColor = "rgba(37,185,122,.25)";
+        tip.style.color = "#0f3a2a";
+      } else if (r.tipLevel === "red"){
+        lamp.style.background = "var(--red)";
+        lamp.style.boxShadow = "0 0 0 3px rgba(239,77,92,.18)";
+        tip.style.background = "#ffecec";
+        tip.style.borderColor = "rgba(239,77,92,.25)";
+        tip.style.color = "#4a151a";
+      } else {
+        lamp.style.background = "var(--yellow)";
+        lamp.style.boxShadow = "0 0 0 3px rgba(246,195,67,.25)";
+        tip.style.background = "#fff6d6";
+        tip.style.borderColor = "#f0e2b3";
+        tip.style.color = "#4b3d13";
+      }
+    }
+
+    function renderAll(){
+      renderHeader();
+      renderRisk();
+      $("pctText").textContent = state.pct;
+      $("btnLev").textContent = state.leverage + "x";
+      $("levVal").textContent = state.leverage;
+      updateWheelUI(wheelCfg, state.pct);
+      updateWheelUI(levWheelCfg, state.leverage);
+    }
+
+    // -----------------------------
+    // 渲染持仓列表 / 历史成交
+    // -----------------------------
+    function renderPositions(){
+      const list = $("list");
+      const segPos = $("segPos");
+
+      // 根据当前tab渲染不同内容
+      if (state.currentTab === "positions") {
+        // 渲染当前持仓
+        const positions = state.mt4.positions || [];
+
+        // 更新持仓数量
+        if(segPos){
+          segPos.textContent = `持有仓位 (${positions.length})`;
+        }
+
+        if(positions.length === 0){
+          list.innerHTML = '<div style="padding:20px;text-align:center;color:#888">暂无持仓</div>';
+          return;
+        }
+
+        list.innerHTML = positions.map(pos => {
+          const side = (pos.side || "").toLowerCase();
+          const symbol = pos.symbol || pos.instrument || "?";
+          const lots = pos.lots || 0;
+          const openPrice = pos.open_price || pos.price || 0;
+          const profit = pos.profit || pos.pnl || 0;
+          const margin = pos.margin || 0;
+          const currentPrice = pos.current_price || openPrice;
+
+          // 简单计算收益率（如果有开仓价和当前价）
+          let pnlPct = 0;
+          if(openPrice > 0 && currentPrice){
+            pnlPct = ((currentPrice - openPrice) / openPrice) * 100 * (side === "sell" ? -1 : 1);
+          }
+
+          return `
             <div class="posItem">
               <div class="posTop">
                 <div>
-                  <div class="posTitle"><span class="sideTag ${sideClass}">${pos.side}</span> ${pos.symbol} <span class="symBadge" style="background:var(--chip); color:var(--text)">${pos.lots}手</span></div>
-                  <div class="mini" style="margin-top: 0.5rem;">浮动盈亏</div>
-                  <div style="font-size: 1.5rem; font-weight: 800; color: ${profitColor};">${profitSign}${fmtNum(pos.profit, 2)}</div>
+                  <div class="posTitle">
+                    <span class="sideTag ${side}">${side === "buy" ? "买" : "卖"}</span>
+                    ${symbol}
+                    <span class="symBadge">${lots}手</span>
+                  </div>
+                  <div class="mini">未实现盈亏 (USD)</div>
+                  <div class="posPnl" style="color:${profit >= 0 ? 'var(--green)' : 'var(--red)'}">
+                    ${profit >= 0 ? "+" : ""}${fmtNum(profit, 2)}
+                  </div>
                 </div>
                 <div style="text-align:right">
-                  <div class="mini">订单号</div>
-                  <div class="big" style="font-family: monospace;">#${pos.ticket}</div>
-                  <div class="mini" style="margin-top:0.375rem">开仓时间 <span style="color:var(--text); font-weight:800">${pos.open_time_str || '-'}</span></div>
+                  <div class="mini">收益率</div>
+                  <div class="posPnl" style="font-size:22px;color:${pnlPct >= 0 ? 'var(--green)' : 'var(--red)'}">
+                    ${pnlPct >= 0 ? "+" : ""}${fmtNum(pnlPct, 2)}%
+                  </div>
                 </div>
               </div>
               <div class="posGrid">
-                <div><div class="mini">开仓价</div><div class="big">${pos.open_price}</div></div>
-                <div><div class="mini">当前价</div><div class="big">${pos.current_price}</div></div>
-                <div><div class="mini">止损 (S/L)</div><div class="big">${pos.sl}</div></div>
-                <div><div class="mini">止盈 (T/P)</div><div class="big">${pos.tp}</div></div>
-                <div><div class="mini">占用保证金</div><div class="big">${fmtNum(pos.margin, 2)}</div></div>
+                <div><div class="mini">手数</div><div class="big">${lots}</div></div>
+                <div><div class="mini">保证金</div><div class="big">${fmtNum(margin, 2)}</div></div>
+                <div><div class="mini">开仓价</div><div class="big">${fmtNum(openPrice, 5)}</div></div>
+                <div><div class="mini">当前价</div><div class="big">${fmtNum(currentPrice, 5)}</div></div>
               </div>
               <div class="posActions">
-                <button class="ghost" onclick="openModifyOrderPanel('${pos.ticket}', ${pos.lots})">修改订单</button>
-                <button class="ghost" style="color: var(--red); border-color: rgba(246,70,93,0.3);" onclick="window.API.submitOrder('${pos.symbol}', 'CLOSE', 'market', 0, 0, ${pos.lots}, {ticket: '${pos.ticket}'})">一键平仓</button>
+                <button class="ghost">止盈/止损</button>
+                <button class="ghost">平仓</button>
               </div>
-            </div>`;
-        });
-        list.innerHTML = html;
-        
-        // 更新底部 Tab 数量
-        const tab = document.querySelectorAll('.segTabs .seg')[0];
-        if(tab) tab.innerHTML = `持有仓位 (${positions.length})`;
+            </div>
+          `;
+        }).join("");
+
+      } else {
+        // 渲染历史成交
+        const trades = state.mt4.trades || [];
+
+        if(trades.length === 0){
+          list.innerHTML = '<div style="padding:20px;text-align:center;color:#888">暂无成交记录</div>';
+          return;
+        }
+
+        list.innerHTML = trades.map(trade => {
+          const ok = trade.ok;
+          const ticket = trade.ticket || "-";
+          const error = trade.error || "";
+          const message = trade.message || "";
+          const execMs = trade.exec_ms || 0;
+
+          return `
+            <div class="posItem">
+              <div class="posTop">
+                <div>
+                  <div class="posTitle">
+                    <span class="sideTag ${ok ? 'buy' : 'sell'}">${ok ? '成功' : '失败'}</span>
+                    订单 #${ticket}
+                  </div>
+                  <div class="mini">${message || error}</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="mini">执行时间</div>
+                  <div class="posPnl" style="font-size:16px">${execMs}ms</div>
+                </div>
+              </div>
+              <div class="posGrid">
+                <div><div class="mini">订单号</div><div class="big">#${ticket}</div></div>
+                <div><div class="mini">状态</div><div class="big" style="color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? '成功' : '失败'}</div></div>
+              </div>
+            </div>
+          `;
+        }).join("");
+      }
     }
+
+    // 弹窗辅助函数
+    function openMask(maskId){
+      const el = document.getElementById(maskId);
+      if(el) el.style.display = "flex";
+    }
+    function closeMask(maskId){
+      const el = document.getElementById(maskId);
+      if(el) el.style.display = "none";
+    }
+
+    // -----------------------------
+    // 可拖动"滑轮组"组件（通用）
+    // -----------------------------
+    function makeWheel({ rootId, marksId, thumbId, min, max, step, marks, onChange, getValue, setValue }){
+      const root = $(rootId);
+      const marksEl = $(marksId);
+      const thumb = $(thumbId);
+
+      // 渲染刻度
+      marksEl.innerHTML = "";
+      marks.forEach(v=>{
+        const m = document.createElement("div");
+        m.className = "mark";
+        m.title = String(v);
+        m.addEventListener("click", ()=>{
+          setValue(v);
+          onChange(v);
+          updateWheelUI(cfg, v);
+        });
+        marksEl.appendChild(m);
+      });
+
+      // 计算 thumb 位置
+      function valueToPct(v){
+        return (v - min) / (max - min);
+      }
+      function pctToValue(p){
+        const raw = min + p * (max - min);
+        const snapped = Math.round(raw / step) * step;
+        return Math.min(max, Math.max(min, snapped));
+      }
+
+      let dragging = false;
+
+      function setFromClientX(clientX){
+        const rect = root.getBoundingClientRect();
+        const left = rect.left + 8;
+        const right = rect.right - 8;
+        const p = Math.min(1, Math.max(0, (clientX - left) / (right - left)));
+        const v = pctToValue(p);
+        setValue(v);
+        onChange(v);
+        updateWheelUI(cfg, v);
+      }
+
+      const onDown = (e)=>{
+        dragging = true;
+        thumb.style.cursor = "grabbing";
+        const x = (e.touches && e.touches[0]) ? e.touches[0].clientX : e.clientX;
+        setFromClientX(x);
+      };
+      const onMove = (e)=>{
+        if (!dragging) return;
+        const x = (e.touches && e.touches[0]) ? e.touches[0].clientX : e.clientX;
+        setFromClientX(x);
+      };
+      const onUp = ()=>{
+        dragging = false;
+        thumb.style.cursor = "grab";
+      };
+
+      root.addEventListener("mousedown", onDown);
+      root.addEventListener("touchstart", onDown, { passive:false });
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("touchmove", onMove, { passive:false });
+      window.addEventListener("mouseup", onUp);
+      window.addEventListener("touchend", onUp);
+
+      const cfg = {
+        min, max, marks,
+        root, marksEl, thumb,
+        valueToPct,
+        getValue
+      };
+      return cfg;
+    }
+
+    function updateWheelUI(cfg, value){
+      const p = cfg.valueToPct(value);
+      const rect = cfg.root.getBoundingClientRect();
+      // thumb 使用百分比布局（不用依赖 rect 宽度）
+      cfg.thumb.style.left = `calc(${(p*100).toFixed(4)}% + 8px)`;
+
+      // marks 高亮：最近的一个
+      const children = Array.from(cfg.marksEl.children);
+      let bestIdx = 0, bestDist = Infinity;
+      cfg.marks.forEach((v, i)=>{
+        const d = Math.abs(v - value);
+        if (d < bestDist){ bestDist = d; bestIdx = i; }
+      });
+      children.forEach((el, i)=>{
+        el.classList.toggle("active", i === bestIdx);
+      });
+    }
+
+    // 仓位比例滑轮（0-100）
+    const wheelCfg = makeWheel({
+      rootId:"wheel",
+      marksId:"marks",
+      thumbId:"thumb",
+      min:0, max:100, step:1,
+      marks:[0,25,50,75,100],
+      getValue: ()=>state.pct,
+      setValue: (v)=>{ state.pct=v; $("pctText").textContent=v; },
+      onChange: (v)=>{
+        // 根据新仓位比例重新计算风控
+        calcRiskFromMT4();
+      }
+    });
+
+    // 杠杆滑轮（1-100，刻度示意）
+    const levWheelCfg = makeWheel({
+      rootId:"levWheel",
+      marksId:"levMarks",
+      thumbId:"levThumb",
+      min:1, max:100, step:1,
+      marks:[1,20,40,60,80,100],
+      getValue: ()=>state.leverage,
+      setValue: (v)=>{ state.leverage=v; $("levVal").textContent=v; },
+      onChange: (v)=>{
+        // 根据新杠杆重新计算风控
+        calcRiskFromMT4();
+      }
+    });
+
+    // -----------------------------
+    // 杠杆弹窗
+    // -----------------------------
+    $("btnLev").addEventListener("click", ()=>openMask("levMask"));
+    $("btnAdjLev").addEventListener("click", ()=>openMask("levMask"));
+    $("closeLev").addEventListener("click", ()=>closeMask("levMask"));
+    $("levMask").addEventListener("click", (e)=>{ if (e.target.id==="levMask") closeMask("levMask"); });
+
+    $("confirmLev").addEventListener("click", ()=>{
+      closeMask("levMask");
+      // 把杠杆写回主按钮
+      $("btnLev").textContent = state.leverage + "x";
+    });
+
+    // 下单按钮（调用后端接口）
+    $("btnBuy").addEventListener("click", async ()=>{
+      const symbol = $("tradeSymbol").value.trim().toUpperCase();
+      const lots = $("tradeLots").value.trim();
+      if(!symbol || !lots){
+        alert("请输入交易品种和数量");
+        return;
+      }
+      try {
+        const formData = new FormData();
+        formData.append("cmd_type", "MARKET");
+        formData.append("symbol", symbol);
+        formData.append("side", "BUY");
+        formData.append("lots", lots);
+
+        const resp = await fetch(API_BASE + "/send_command", {
+          method: "POST",
+          body: formData
+        });
+        if(resp.ok){
+          alert(`下单成功：做多 ${symbol} ${lots}手`);
+        } else {
+          alert("下单失败");
+        }
+      } catch(e){
+        alert("下单出错：" + e.message);
+      }
+    });
+
+    $("btnSell").addEventListener("click", async ()=>{
+      const symbol = $("tradeSymbol").value.trim().toUpperCase();
+      const lots = $("tradeLots").value.trim();
+      if(!symbol || !lots){
+        alert("请输入交易品种和数量");
+        return;
+      }
+      try {
+        const formData = new FormData();
+        formData.append("cmd_type", "MARKET");
+        formData.append("symbol", symbol);
+        formData.append("side", "SELL");
+        formData.append("lots", lots);
+
+        const resp = await fetch(API_BASE + "/send_command", {
+          method: "POST",
+          body: formData
+        });
+        if(resp.ok){
+          alert(`下单成功：做空 ${symbol} ${lots}手`);
+        } else {
+          alert("下单失败");
+        }
+      } catch(e){
+        alert("下单出错：" + e.message);
+      }
+    });
+
+    // 初始化
+    renderAll();
+    // 初次布局后更新 thumb
+    requestAnimationFrame(()=>{
+      updateWheelUI(wheelCfg, state.pct);
+      updateWheelUI(levWheelCfg, state.leverage);
+    });
+
+    // 启动定时轮询 MT4 数据（每 3 秒刷新一次）
+    fetchMT4Data();  // 立即获取一次
+    fetchHistoryTrades();  // 获取历史成交
+    setInterval(fetchMT4Data, 3000);
+    setInterval(fetchHistoryTrades, 5000);  // 历史成交5秒刷新一次
+
+    window.addEventListener("resize", ()=>{
+      updateWheelUI(wheelCfg, state.pct);
+      updateWheelUI(levWheelCfg, state.leverage);
+    });
   </script>
 </body>
 </html>"""
 
 @app.route("/")
 def index():
-    return render_template_string(HTML_TEMPLATE)
-
-# ==================== API 接口实现 (v1) ====================
-
-@app.route('/api/v1/order', methods=['POST'])
-def submit_order_v1():
-    if is_restricted_time():
-        return jsonify({"success": False, "message": "非交易时段，禁止下单"}), 403
-
-    data = request.json
-    print(f"【API】收到下单请求: {data}")
-    
-    symbol = norm_symbol(data.get('symbol'))
-    side_raw = data.get('side', '')
-    cmd_type_raw = data.get('type', 'market')
-    lots = float(data.get('lots', 0))
-    
-    if lots <= 0:
-        return jsonify({"success": False, "message": "手数必须大于0"}), 400
-
-    # 构造命令对象
-    global cmd_counter
-    now = int(time.time())
-    cmd = {
-        "id": str(cmd_counter),
-        "nonce": generate_nonce(),
-        "created_at": now,
-        "ttl_sec": 30, # 稍微长一点
-        "symbol": symbol,
-        "volume": lots,
-        "lots": lots
-    }
-    
-    # 填充 account
-    with history_lock:
-        if history_status and isinstance(history_status[0].get("parsed"), dict):
-            account = norm_str(history_status[0]["parsed"].get("account"))
-            if account:
-                cmd["account"] = account
-
-    # 判断类型
-    # type: "market", "limit", "market_tpsl", "limit_tpsl", "quote"
-    # 平仓逻辑特殊处理
-    if side_raw == 'CLOSE':
-        cmd["action"] = "close"
-        cmd["ticket"] = int(data.get("ticket"))
-    elif side_raw == 'QUOTE' or cmd_type_raw == 'quote':
-        cmd["action"] = "quote"
-    elif "limit" in cmd_type_raw:
-        cmd["action"] = "limit"
-        cmd["side"] = "buy" if side_raw.upper() == "BUY" else "sell"
-        # 获取价格
-        price = float(data.get('inpPrice', 0) or 0)
-        if price <= 0:
-             return jsonify({"success": False, "message": "限价单必须输入触发价格"}), 400
-        cmd["price"] = price
-    else:
-        cmd["action"] = "market"
-        cmd["side"] = "buy" if side_raw.upper() == "BUY" else "sell"
-    
-    # TP/SL
-    tp = float(data.get('inpTp', 0) or 0)
-    sl = float(data.get('inpSl', 0) or 0)
-    if tp > 0: cmd["tp"] = tp
-    if sl > 0: cmd["sl"] = sl
-    
-    with commands_lock:
-        commands.append(cmd)
-        cmd_counter += 1
-    
-    return jsonify({
-        "success": True, 
-        "message": "指令已发送到队列",
-        "order": cmd
-    })
-
-@app.route('/api/v1/position/modify', methods=['POST'])
-def modify_position_v1():
-    data = request.json
-    position_id = data.get('positionId') # Ticket
-    tp = float(data.get('tpPrice', 0) or 0)
-    sl = float(data.get('slPrice', 0) or 0)
-    
-    # 由于 EA 目前不支持 Modify 命令，这里只能记录日志或做有限处理
-    # 如果要支持，需要在 EA 添加 Modify 动作。
-    # 这里我们生成一个 'modify' 动作的命令，假设未来 EA 会支持，或者作为日志记录
-    
-    print(f"【API】修改持仓: {data}")
-    
-    # 临时：由于 EA 不支持 modify，返回提示
-    # 或者，如果仅仅是平仓部分手数，可以生成 close 命令
-    # 但这里是修改 TP/SL
-    
-    return jsonify({"success": False, "message": "EA 暂不支持直接修改订单属性"}), 400
-
-@app.route('/api/v1/position/lock', methods=['POST'])
-def lock_position_v1():
-    data = request.json
-    position_id = data.get('positionId')
-    print(f"【API】执行锁仓: {position_id}")
-    
-    # 锁仓逻辑：查找该持仓，获取 symbol 和 lots，然后开反向单
-    target_pos = None
-    with history_lock:
-        if history_positions and history_positions[0].get("parsed"):
-            positions = history_positions[0]["parsed"].get("positions", [])
-            for p in positions:
-                if str(p.get("ticket")) == str(position_id):
-                    target_pos = p
-                    break
-    
-    if target_pos:
-        symbol = target_pos.get("symbol")
-        current_side = target_pos.get("side") # buy/sell
-        lots = target_pos.get("lots")
-        
-        reverse_side = "sell" if current_side == "buy" else "buy"
-        
-        # 生成反向下单命令
-        global cmd_counter
-        cmd = {
-            "id": str(cmd_counter),
-            "nonce": generate_nonce(),
-            "created_at": int(time.time()),
-            "ttl_sec": 30,
-            "action": "market",
-            "symbol": symbol,
-            "side": reverse_side,
-            "volume": lots,
-            "lots": lots
-        }
-        
-        # 填充 account
-        with history_lock:
-            if history_status and isinstance(history_status[0].get("parsed"), dict):
-                account = norm_str(history_status[0]["parsed"].get("account"))
-                if account:
-                    cmd["account"] = account
-
-        with commands_lock:
-            commands.append(cmd)
-            cmd_counter += 1
-            
-        return jsonify({"success": True, "message": "锁仓指令(反向开单)已发送"})
-    
-    return jsonify({"success": False, "message": "未找到持仓，无法锁仓"}), 404
-
-@app.route('/api/v1/calendar', methods=['GET'])
-def get_calendar_pnl_v1():
-    year = request.args.get('year')
-    month = request.args.get('month')
-    # 模拟数据
-    data = {}
-    for i in range(1, 32):
-        if random.random() > 0.3:
-            data[i] = round(random.uniform(-80, 200), 2)
-    return jsonify(data)
+    return render_template_string(PREVIEW_TEMPLATE)
 
 # ==================== 旧版 echo ====================
 @app.route("/web/api/echo", methods=["POST"])
@@ -2099,65 +2039,6 @@ def mt4_quote():
     store_mt4_data(raw_body, client_ip, headers_dict)
     return "OK", 200
 
-# ==================== Tick 推送接口 ====================
-@app.route('/api/tick', methods=['POST'])
-def receive_tick():
-    """
-    接收 EA 推送的 Tick 数据 (单向推送)
-    """
-    try:
-        ticks = request.json
-        if not isinstance(ticks, list):
-            ticks = [ticks]
-            
-        receive_time = int(time.time() * 1000)
-        
-        # 这里可以将 Tick 数据存入缓存，供前端轮询
-        # 简单实现：只保存最新的 QUOTE_DATA 到 history_report 队列，模拟成 QUOTE 报告
-        # 以便前端通过 /api/latest_status 轮询到
-        
-        for tick in ticks:
-            symbol = tick.get('symbol')
-            bid = tick.get('bid')
-            ask = tick.get('ask')
-            tick_time = tick.get('tick_time')
-            
-            if not symbol or not bid or not ask: continue
-            
-            # 构造一个伪造的 QUOTE_DATA 报告存入 history_report
-            # 这样前端 refreshData -> /api/latest_status -> latest_quote 逻辑就能复用
-            
-            quote_msg = json.dumps({
-                "bid": bid,
-                "ask": ask
-            })
-            
-            record = {
-                "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "ip": get_client_ip(),
-                "method": "POST",
-                "path": "/api/tick",
-                "category": "report", # 伪装成 report
-                "headers": {},
-                "body_raw": json.dumps(tick),
-                "parsed": {
-                    "desc": "QUOTE_DATA",
-                    "spread": tick.get('spread', 0), # 假设 EA 没传 spread 就算了
-                    "ts": tick_time, # 使用 EA 的 tick_time
-                    "message": quote_msg,
-                    "account": "tick_stream" # 标识来源
-                }
-            }
-            
-            with history_lock:
-                history_report.appendleft(record)
-
-        return '', 204 # No Content, 快速响应
-        
-    except Exception as e:
-        print(f"Error processing tick: {e}")
-        return jsonify({'error': str(e)}), 500
-
 # ==================== 网页发单 ====================
 @app.route("/send_command", methods=["POST"])
 def send_command():
@@ -2189,7 +2070,7 @@ def send_command():
     lots = norm_volume(lots_raw) if lots_raw else None
     price = norm_volume(price_raw) if price_raw else None
 
-    # 强校验与风控
+    # 强校验
     if cmd_type in ("MARKET", "LIMIT"):
         if not symbol:
             print("[BLOCK] symbol 为空")
@@ -2200,27 +2081,6 @@ def send_command():
         if volume <= 0:
             print("[BLOCK] volume 必须 > 0")
             return redirect(url_for("index"))
-            
-        # 风控：单笔手数限制 (示例: 最大 5 手)
-        if volume > 5.0:
-            print("[RISK] 单笔手数超过限制 (Max 5.0)")
-            return jsonify({"success": False, "message": "单笔手数超过限制 (Max 5.0)"}), 400
-            
-        # 风控：资金预检 (简单模拟)
-        # 假设我们从 latest_status 获取 free_margin
-        # 注意：这里可能拿到的是旧数据，严格风控应在 EA 端再次校验
-        # 这里仅作前端/网关层面的快速拦截
-        with history_lock:
-            latest_status = history_status[0] if history_status else None
-            if latest_status:
-                free_margin = latest_status.get("free_margin", 0)
-                # 粗略估算保证金：1手 ~ 1000 USD (假设杠杆100，合约100000)
-                # 实际应根据 symbol 和 leverage 计算，这里仅作演示
-                est_margin = volume * 1000 
-                if free_margin < est_margin * 1.1: # 保留 10% 缓冲
-                    print(f"[RISK] 资金不足预警: Free={free_margin}, EstReq={est_margin}")
-                    # return jsonify({"success": False, "message": "资金不足 (预估)"}), 400
-                    # 暂时仅打印日志，不硬拦截，以免误杀
     elif cmd_type == "CLOSE":
         if not ticket:
             print("[BLOCK] ticket 为空")
@@ -2297,6 +2157,505 @@ def clear_commands():
     with commands_lock:
         commands.clear()
     return redirect(url_for("index"))
+
+# ==================== HTML（保留你的布局，增加一个 poll 表）====================
+HTML_TEMPLATE = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MT4 远程交易执行面板 · 专业版</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <style>
+    body { padding-top: 20px; background-color: #f0f2f5; }
+    .card-header { font-weight: 600; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+    .stat-item { background: #f8f9fa; border-radius: 8px; padding: 10px 12px; border-left: 4px solid #0d6efd; }
+    .stat-label { font-size: 0.8rem; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
+    .stat-value { font-size: 1.2rem; font-weight: 600; font-family: 'Courier New', monospace; }
+    .history-table td { font-size: 0.85rem; vertical-align: middle; }
+    .badge-ip { font-family: monospace; background: #e9ecef; color: #000; padding: 3px 6px; border-radius: 4px; }
+    .command-item { background: #e9ecef; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
+    .info-box { background: #d1e7ff; border-radius: 8px; padding: 12px; margin-bottom: 15px; border-left: 5px solid #0a58ca; }
+    .pause-control { background: #f8d7da; border-left: 5px solid #dc3545; }
+    .restricted-mode {
+      background-color: black !important;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: red;
+      font-size: 4rem;
+      font-weight: bold;
+      text-align: center;
+    }
+    .restricted-mode .status-box {
+      background: rgba(0,0,0,0.7);
+      border: 2px solid red;
+      border-radius: 10px;
+      padding: 20px;
+      margin-bottom: 20px;
+      color: white;
+      font-size: 1.5rem;
+    }
+    .restricted-mode .status-box .label { color: #aaa; font-size: 1rem; }
+    .restricted-mode .status-box .value { color: #0f0; }
+    pre { white-space: pre-wrap; word-break: break-word; }
+  </style>
+</head>
+<body>
+{% if restricted %}
+<div class="restricted-mode">
+  <div class="status-box">
+    <div class="row">
+      <div class="col">
+        <span class="label">账户</span><br>
+        <span class="value">{{ latest.account if latest else 'N/A' }}</span>
+      </div>
+      <div class="col">
+        <span class="label">余额</span><br>
+        <span class="value">{{ "%.2f"|format(latest.balance) if latest and latest.balance is number else 'N/A' }}</span>
+      </div>
+      <div class="col">
+        <span class="label">净值</span><br>
+        <span class="value">{{ "%.2f"|format(latest.equity) if latest and latest.equity is number else 'N/A' }}</span>
+      </div>
+      <div class="col">
+        <span class="label">浮动盈亏</span><br>
+        <span class="value">{{ "%.2f"|format(latest.floating_pnl) if latest and latest.floating_pnl is number else 'N/A' }}</span>
+      </div>
+    </div>
+  </div>
+  <div>为人民服务</div>
+</div>
+{% else %}
+<div class="container">
+  <h1 class="mb-3"><i class="bi bi-cpu"></i> MT4 远程交易执行 · 专业监控</h1>
+
+  <div class="info-box d-flex justify-content-between align-items-center">
+    <div>
+      <i class="bi bi-info-circle-fill me-2"></i>
+      <strong>MT4专用接口：</strong>
+      <code>/web/api/mt4/commands</code> (轮询),
+      <code>/web/api/mt4/status</code> (状态),
+      <code>/web/api/mt4/positions</code> (持仓),
+      <code>/web/api/mt4/report</code> (回报)
+      <span class="badge bg-secondary ms-2">等待指令返回</span>
+      <br><small class="text-muted">原 <code>/web/api/echo</code> 接口仍保留，用于调试</small>
+    </div>
+    <span class="text-muted small">指令将按账户过滤后返回</span>
+  </div>
+
+  <div class="card shadow-sm mb-3 pause-control">
+    <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-pause-circle"></i> 应急暂停控制</span>
+    </div>
+    <div class="card-body">
+      <div class="d-flex align-items-center justify-content-between">
+        <span>当前状态: <strong id="pause-status" class="{% if paused %}text-danger{% else %}text-success{% endif %}">{% if paused %}已暂停{% else %}运行中{% endif %}</strong></span>
+        <div>
+          <button id="pause-btn" class="btn btn-warning btn-sm me-2" {% if paused %}disabled{% endif %}><i class="bi bi-pause"></i> 暂停</button>
+          <button id="resume-btn" class="btn btn-success btn-sm" {% if not paused %}disabled{% endif %}><i class="bi bi-play"></i> 恢复</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 最新账户状态（只来自 status） -->
+  <div class="card mb-4 shadow-sm">
+    <div class="card-header bg-primary text-white bg-gradient">
+      <i class="bi bi-graph-up-arrow"></i> 最新账户状态（完整字段）
+    </div>
+    <div class="card-body">
+      {% if latest %}
+        {% if latest.error %}
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i> {{ latest.error }}
+            <br><small>原始数据预览：{{ latest.body_raw_preview }}</small>
+            {% if latest.full_error %}
+              <pre class="mt-2 bg-light p-2 rounded" style="font-size:0.75rem;">{{ latest.full_error }}</pre>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="stat-grid">
+            <div class="stat-item"><span class="stat-label">account</span><div class="stat-value">{{ latest.account or 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">server</span><div class="stat-value">{{ latest.server or 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">ts</span><div class="stat-value">{{ latest.ts or 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">balance</span><div class="stat-value">{{ "%.2f"|format(latest.balance) if latest.balance is number else (latest.balance or 'N/A') }}</div></div>
+            <div class="stat-item"><span class="stat-label">equity</span><div class="stat-value">{{ "%.2f"|format(latest.equity) if latest.equity is number else (latest.equity or 'N/A') }}</div></div>
+            <div class="stat-item"><span class="stat-label">margin</span><div class="stat-value">{{ "%.2f"|format(latest.margin) if latest.margin is number else (latest.margin or 'N/A') }}</div></div>
+            <div class="stat-item"><span class="stat-label">free_margin</span><div class="stat-value">{{ "%.2f"|format(latest.free_margin) if latest.free_margin is number else (latest.free_margin or 'N/A') }}</div></div>
+            <div class="stat-item"><span class="stat-label">margin_level</span><div class="stat-value">{{ "%.2f"|format(latest.margin_level) if latest.margin_level is number else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">floating_pnl</span><div class="stat-value">{{ "%.2f"|format(latest.floating_pnl) if latest.floating_pnl is number else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">day_start_equity</span><div class="stat-value">{{ "%.2f"|format(latest.day_start_equity) if latest.day_start_equity is number else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">daily_closed_pnl</span><div class="stat-value">{{ "%.2f"|format(latest.daily_closed_pnl) if latest.daily_closed_pnl is number else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">daily_pnl</span><div class="stat-value">{{ "%.2f"|format(latest.daily_pnl) if latest.daily_pnl is number else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">daily_return</span><div class="stat-value">{{ "%.6f"|format(latest.daily_return) if latest.daily_return is number else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">exposure_notional</span><div class="stat-value">{{ "%.2f"|format(latest.exposure_notional) if latest.exposure_notional is number else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">leverage_used</span><div class="stat-value">{{ "%.4f"|format(latest.leverage_used) if latest.leverage_used is number else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">risk_flags</span><div class="stat-value">{{ latest.risk_flags if latest.risk_flags else '' }}</div></div>
+
+            <div class="stat-item"><span class="stat-label">metrics.poll_latency_ms</span><div class="stat-value">{{ latest.poll_latency_ms if latest.poll_latency_ms is not none else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">metrics.last_http_code</span><div class="stat-value">{{ latest.last_http_code if latest.last_http_code is not none else 'N/A' }}</div></div>
+            <div class="stat-item"><span class="stat-label">metrics.last_error</span><div class="stat-value">{{ latest.last_error if latest.last_error else '' }}</div></div>
+            <div class="stat-item"><span class="stat-label">metrics.queue_batch_size</span><div class="stat-value">{{ latest.queue_batch_size }}</div></div>
+            <div class="stat-item"><span class="stat-label">metrics.reports_sent</span><div class="stat-value">{{ latest.reports_sent_count }}</div></div>
+            <div class="stat-item"><span class="stat-label">metrics.executed</span><div class="stat-value">{{ latest.executed_commands }}</div></div>
+            <div class="stat-item"><span class="stat-label">metrics.failed</span><div class="stat-value">{{ latest.failed_commands }}</div></div>
+          </div>
+        {% endif %}
+
+        <div class="mt-3">
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#rawJsonPreview" aria-expanded="false">
+            <i class="bi bi-code-slash"></i> 查看原始JSON（status）
+          </button>
+          <div class="collapse mt-2" id="rawJsonPreview">
+            <pre class="bg-light p-3 rounded" style="font-size:0.75rem;">{{ latest_raw.body_raw if latest_raw else '无原始数据' }}</pre>
+          </div>
+        </div>
+      {% else %}
+        <p class="text-muted"><i class="bi bi-exclamation-circle"></i> 尚未收到任何 status 上报数据。</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- 持仓展示区域 -->
+  {% if latest_detail and latest_detail.positions %}
+  <div class="card shadow-sm mb-4">
+    <div class="card-header bg-primary text-white">
+      <i class="bi bi-collection"></i> 当前持仓 ( {{ latest_detail.positions|length }} )
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-striped table-hover mb-0">
+          <thead>
+            <tr>
+              <th>Ticket</th>
+              <th>品种</th>
+              <th>方向</th>
+              <th>手数</th>
+              <th>开仓价</th>
+              <th>当前价</th>
+              <th>浮动盈亏</th>
+              <th>保证金</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for pos in latest_detail.positions %}
+            <tr>
+              <td>{{ pos.ticket }}</td>
+              <td>{{ pos.symbol }}</td>
+              <td><span class="badge bg-{{ 'success' if pos.side == 'buy' else 'danger' }}">{{ pos.side }}</span></td>
+              <td>{{ "%.2f"|format(pos.lots) if pos.lots is number else pos.lots }}</td>
+              <td>{{ "%.5f"|format(pos.open_price) if pos.open_price is number else pos.open_price }}</td>
+              <td>{{ "%.5f"|format(pos.current_price) if pos.current_price is number else pos.current_price }}</td>
+              <td style="color: {{ 'green' if pos.profit > 0 else 'red' }}">{{ "%.2f"|format(pos.profit) if pos.profit is number else pos.profit }}</td>
+              <td>{{ "%.2f"|format(pos.margin) if pos.margin is number else pos.margin }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="row">
+    <!-- 左：status 历史 -->
+    <div class="col-lg-7 mb-4">
+      <div class="card shadow-sm h-100">
+        <div class="card-header bg-secondary text-white">
+          <i class="bi bi-clock-history"></i> 状态上报历史(status) ({{ history|length }}/{{ MAX_HISTORY }})
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-striped table-hover history-table mb-0">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>账户</th>
+                  <th>余额</th>
+                  <th>净值</th>
+                  <th>浮动盈亏</th>
+                  <th>IP</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for rec in history %}
+                <tr>
+                  <td>{{ rec.received_at.split(' ')[1] }}</td>
+                  <td>{{ rec.account or '-' }}</td>
+                  <td>{{ "%.2f"|format(rec.balance) if rec.balance is number else rec.balance }}</td>
+                  <td>{{ "%.2f"|format(rec.equity) if rec.equity is number else rec.equity }}</td>
+                  <td>{{ "%.2f"|format(rec.floating_pnl) if rec.floating_pnl is number else rec.floating_pnl }}</td>
+                  <td><span class="badge-ip">{{ rec.ip }}</span></td>
+                  <td>
+                    <button class="btn btn-sm btn-outline-info" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#raw-{{ loop.index }}"
+                      aria-expanded="false"><i class="bi bi-eye"></i></button>
+                    <div class="collapse mt-1" id="raw-{{ loop.index }}">
+                      <div class="card card-body p-2">
+                        <small>{{ rec.body_raw }}</small>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+                {% else %}
+                <tr><td colspan="7" class="text-center text-muted">暂无 status 历史数据</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 轮询请求(poll)历史：用来排查 max=50 刷屏 -->
+      <div class="card shadow-sm mt-3">
+        <div class="card-header bg-light">
+          <i class="bi bi-arrow-repeat"></i> 轮询请求历史(commands poll) ({{ poll_history|length }}/{{ MAX_HISTORY }})
+          <small class="text-muted ms-2">这里展示的是 EA 发来的 {"account","max"}，不会影响 status</small>
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-sm table-striped mb-0">
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>IP</th>
+                  <th>Body</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for rec in poll_history %}
+                <tr>
+                  <td>{{ rec.received_at.split(' ')[1] }}</td>
+                  <td><span class="badge-ip">{{ rec.ip }}</span></td>
+                  <td><small>{{ rec.body_raw }}</small></td>
+                </tr>
+                {% else %}
+                <tr><td colspan="3" class="text-center text-muted">暂无 poll 数据</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 持仓历史 -->
+    <div class="card shadow-sm mt-3">
+      <div class="card-header bg-info text-white">
+        <i class="bi bi-clock-history"></i> 持仓上报历史(positions) 
+        <small class="text-white-50 ms-2">记录来自 /web/api/mt4/positions</small>
+      </div>
+      <div class="card-body p-0">
+        {% set positions_history = history_positions[:5] %}
+        {% if positions_history %}
+          {% for rec in positions_history %}
+          <div class="border-bottom p-2">
+            <small class="text-muted">{{ rec.received_at }} ({{ rec.ip }})</small>
+            <div class="mt-1">
+              {% set positions = rec.parsed.positions if rec.parsed else [] %}
+              {% if positions %}
+                {% for pos in positions[:3] %}
+                <span class="badge bg-{{ 'success' if pos.side == 'buy' else 'danger' }} me-1">
+                  {{ pos.symbol }} {{ pos.lots }}手
+                </span>
+                {% endfor %}
+                {% if positions|length > 3 %}
+                <small class="text-muted">...等{{ positions|length }}个</small>
+                {% endif %}
+              {% else %}
+                <small class="text-muted">无持仓</small>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="p-3 text-center text-muted">暂无 positions 上报数据</div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- 右：命令队列+发单 -->
+    <div class="col-lg-5 mb-4">
+      <div class="card shadow-sm mb-4">
+        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-list-check"></i> 待发送指令队列 ({{ commands|length }})</span>
+          <form method="post" action="{{ url_for('clear_commands') }}" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-light" onclick="return confirm('确定清空所有指令？')">
+              <i class="bi bi-trash"></i> 清空
+            </button>
+          </form>
+        </div>
+        <div class="card-body">
+          {% if commands %}
+            {% for cmd in commands %}
+            <div class="command-item d-flex justify-content-between align-items-center">
+              <div>
+                <strong>{{ cmd.action }}</strong>
+                {% if cmd.action == 'market' %}
+                  {{ cmd.side.upper() }} {{ cmd.symbol }} {{ cmd.volume }}手
+                  {% if cmd.sl_price %} SL:{{ cmd.sl_price }}{% endif %}
+                  {% if cmd.tp_price %} TP:{{ cmd.tp_price }}{% endif %}
+                {% elif cmd.action == 'limit' %}
+                  {{ cmd.side.upper() }} {{ cmd.symbol }} {{ cmd.volume }}手 @ {{ cmd.price }}
+                  {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
+                  {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
+                {% elif cmd.action == 'close' %}
+                  平仓 票号:{{ cmd.ticket }}{% if cmd.lots %} 手数:{{ cmd.lots }}{% endif %}
+                {% endif %}
+                <br><small class="text-muted"><i class="bi bi-clock"></i>
+                  账户: {{ cmd.account if cmd.account else '广播' }} | ID: {{ cmd.id }}
+                </small>
+              </div>
+              <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
+                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')">
+                  <i class="bi bi-x"></i>
+                </button>
+              </form>
+            </div>
+            {% endfor %}
+          {% else %}
+            <p class="text-muted mb-0"><i class="bi bi-inbox"></i> 队列为空，暂无待发指令。</p>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card shadow-sm">
+        <div class="card-header bg-warning">
+          <i class="bi bi-pencil-square"></i> 下达新交易指令
+        </div>
+        <div class="card-body">
+          <form method="post" action="{{ url_for('send_command') }}" id="commandForm">
+            <div class="mb-2">
+              <label class="form-label">账户 <span class="text-muted">(可选)</span></label>
+              <input type="text" name="account" class="form-control form-control-sm" placeholder="833711" id="accountInput">
+            </div>
+            <div class="mb-2">
+              <label class="form-label">指令类型</label>
+              <select name="cmd_type" class="form-select form-select-sm" id="cmdTypeSelect" required>
+                <option value="MARKET" selected>市价单 (MARKET)</option>
+                <option value="LIMIT">限价单 (LIMIT)</option>
+                <option value="CLOSE">平仓 (CLOSE)</option>
+              </select>
+            </div>
+
+            <div id="tradeFields">
+              <div class="mb-2">
+                <label class="form-label">品种</label>
+                <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD">
+              </div>
+              <div class="mb-2">
+                <label class="form-label">方向</label>
+                <select name="side" class="form-select form-select-sm">
+                  <option value="BUY">买入 (BUY)</option>
+                  <option value="SELL">卖出 (SELL)</option>
+                </select>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">手数</label>
+                <input type="number" step="0.01" min="0.01" name="volume" class="form-control form-control-sm" value="0.1">
+              </div>
+              <div class="row">
+                <div class="col mb-2">
+                  <label class="form-label">止损 (SL)</label>
+                  <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="可选">
+                </div>
+                <div class="col mb-2">
+                  <label class="form-label">止盈 (TP)</label>
+                  <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="可选">
+                </div>
+              </div>
+            </div>
+
+            <div id="limitFields" style="display:none;">
+              <div class="mb-2">
+                <label class="form-label">限价价格</label>
+                <input type="number" step="0.00001" name="price" class="form-control form-control-sm" placeholder="如 1.1050">
+              </div>
+            </div>
+
+            <div id="closeFields" style="display:none;">
+              <div class="mb-2">
+                <label class="form-label">订单号 (ticket)</label>
+                <input type="number" name="ticket" class="form-control form-control-sm" placeholder="如 12345678">
+              </div>
+              <div class="mb-2">
+                <label class="form-label">手数 (可选)</label>
+                <input type="number" step="0.01" min="0.01" name="lots" class="form-control form-control-sm" placeholder="可选">
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary w-100 mt-2"><i class="bi bi-send"></i> 加入指令队列</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endif %}
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const savedAccount = localStorage.getItem('mt4_default_account');
+    if (savedAccount) document.getElementById('accountInput').value = savedAccount;
+  });
+
+  document.getElementById('commandForm')?.addEventListener('submit', function() {
+    const v = document.getElementById('accountInput').value;
+    if (v) localStorage.setItem('mt4_default_account', v);
+  });
+
+  function updatePauseStatus() {
+    fetch('/api/status')
+      .then(r => r.json())
+      .then(data => {
+        const statusEl = document.getElementById('pause-status');
+        const pauseBtn = document.getElementById('pause-btn');
+        const resumeBtn = document.getElementById('resume-btn');
+        if (data.paused) {
+          statusEl.innerText = '已暂停';
+          statusEl.className = 'text-danger';
+          pauseBtn.disabled = true;
+          resumeBtn.disabled = false;
+        } else {
+          statusEl.innerText = '运行中';
+          statusEl.className = 'text-success';
+          pauseBtn.disabled = false;
+          resumeBtn.disabled = true;
+        }
+      });
+  }
+  document.getElementById('pause-btn')?.addEventListener('click', () => fetch('/api/pause',{method:'POST'}).then(()=>updatePauseStatus()));
+  document.getElementById('resume-btn')?.addEventListener('click', () => fetch('/api/resume',{method:'POST'}).then(()=>updatePauseStatus()));
+  setInterval(updatePauseStatus, 5000);
+  updatePauseStatus();
+
+  const cmdTypeSelect = document.getElementById('cmdTypeSelect');
+  const tradeFields = document.getElementById('tradeFields');
+  const limitFields = document.getElementById('limitFields');
+  const closeFields = document.getElementById('closeFields');
+
+  function toggleFields() {
+    const type = cmdTypeSelect.value;
+    tradeFields.style.display = (type === 'MARKET' || type === 'LIMIT') ? 'block' : 'none';
+    limitFields.style.display = (type === 'LIMIT') ? 'block' : 'none';
+    closeFields.style.display = (type === 'CLOSE') ? 'block' : 'none';
+  }
+  cmdTypeSelect.addEventListener('change', toggleFields);
+  toggleFields();
+</script>
+</body>
+</html>
+"""
 
 # ==================== 启动 ====================
 if __name__ == "__main__":
