@@ -2331,6 +2331,8 @@ def index():
 
 @app.route('/api/v1/order', methods=['POST'])
 def submit_order_v1():
+    global cmd_counter
+    
     if is_restricted_time():
         return jsonify({"success": False, "message": "非交易时段，禁止下单"}), 403
 
@@ -2346,7 +2348,6 @@ def submit_order_v1():
     if side_raw == 'QUOTE' or cmd_type_raw == 'quote':
         print(f"[ORDER][QUOTE] Processing for {symbol}")
         # 构造简单命令对象
-        global cmd_counter
         now = int(time.time())
         cmd = {
             "id": str(cmd_counter),
@@ -2395,7 +2396,6 @@ def submit_order_v1():
         return jsonify({"success": False, "message": "计算手数无效，请检查投入金额或价格"}), 400
 
     # 构造命令对象
-    global cmd_counter
     now = int(time.time())
     
     # 获取有效期 (分钟)，默认 10 分钟
