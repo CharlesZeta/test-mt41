@@ -227,6 +227,60 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
 def safe_num(x):
     return isinstance(x, (int, float))
 
+# ==================== 数据持久化 (每日盈亏) ====================
+DAILY_STATS_FILE = "daily_stats.json"
+daily_stats_lock = threading.Lock()
+
+def load_daily_stats():
+    if not os.path.exists(DAILY_STATS_FILE):
+        return {}
+    try:
+        with open(DAILY_STATS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_daily_stats(stats):
+    try:
+        with open(DAILY_STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[ERR] Save daily stats failed: {e}")
+
+def update_daily_stats_from_record(record):
+    """从 status 记录中提取 daily_pnl 并更新到文件"""
+    if not record or not record.get("parsed"):
+        return
+        
+    # 先补全计算字段 (daily_pnl)
+    parsed = auto_fill_status(record["parsed"])
+    
+    daily_pnl = parsed.get("daily_pnl")
+    if daily_pnl is None:
+        return
+        
+    # 获取日期 (UTC+8)
+    ts = parsed.get("ts") or int(time.time())
+    # 转为 UTC+8 datetime
+    dt_utc8 = datetime.utcfromtimestamp(ts + 8*3600)
+    date_str = dt_utc8.strftime("%Y-%m-%d") # Key: "YYYY-MM-DD"
+    
+    # 只需要更新当天的，因为 daily_pnl 是累计值（截至当前）
+    # 但要注意：如果是补发昨天的包，不应覆盖。
+    # 简单起见，我们假设收到的都是最新的。
+    
+    with daily_stats_lock:
+        stats = load_daily_stats()
+        # 更新当天的盈亏 (覆盖旧值，因为是累计)
+        # 格式：{"YYYY-MM-DD": float}
+        current_val = round(float(daily_pnl), 2)
+        
+        # 仅当数值变化时才保存和打印日志，避免频繁 I/O
+        if stats.get(date_str) != current_val:
+            stats[date_str] = current_val
+            save_daily_stats(stats)
+            print(f"[DAILY_STATS] Saved {date_str}: {current_val} (Account: {parsed.get('account')})")
+
 # ==================== 日内计算（UTC+8）====================
 # 存储每个账户的日初净值（UTC+8 0点刷新）
 day_start_equity_store = {}  # {account: (timestamp, equity)}
@@ -1519,10 +1573,30 @@ HTML_TEMPLATE = r"""<!doctype html>
       const currentLots = lots || 1.0;
       const tpSlider = $('tpLotsSlider');
       const slSlider = $('slLotsSlider');
+      
+      // 辅助函数：近似凑整 (例如 0.01)
+      const roundLots = (val) => Math.round(val * 100) / 100;
+      
       tpSlider.max = currentLots; tpSlider.value = currentLots;
       slSlider.max = currentLots; slSlider.value = currentLots;
-      $('tpLotsText').innerText = currentLots.toFixed(2) + " 手";
-      $('slLotsText').innerText = currentLots.toFixed(2) + " 手";
+      
+      // 更新文本的函数
+      const updateTpText = () => {
+          let val = roundLots(parseFloat(tpSlider.value));
+          $('tpLotsText').innerText = val.toFixed(2) + " 手";
+      };
+      const updateSlText = () => {
+          let val = roundLots(parseFloat(slSlider.value));
+          $('slLotsText').innerText = val.toFixed(2) + " 手";
+      };
+      
+      // 初始化文本
+      updateTpText();
+      updateSlText();
+      
+      // 绑定事件 (实时反馈)
+      tpSlider.oninput = updateTpText;
+      slSlider.oninput = updateSlText;
       
       // 存储当前修改的Ticket
       window.currentModifyTicket = ticket;
@@ -1607,7 +1681,10 @@ HTML_TEMPLATE = r"""<!doctype html>
         updateSliderTrack(marginSlider);
         
         marginSlider.oninput = function() {
-          window.quantState.marginPct = parseInt(this.value); // 这里 marginPct 实际存的是金额
+          // 近似凑整：取整
+          let val = Math.round(parseFloat(this.value));
+          this.value = val; 
+          window.quantState.marginPct = val; // 这里 marginPct 实际存的是金额
           updateSliderTrack(this);
           window.updateCalculations();
         };
@@ -2190,13 +2267,30 @@ def lock_position_v1():
 
 @app.route('/api/v1/calendar', methods=['GET'])
 def get_calendar_pnl_v1():
-    year = request.args.get('year')
-    month = request.args.get('month')
-    # 模拟数据
+    year = request.args.get('year', type=int)
+    month = request.args.get('month', type=int)
+    
+    if not year or not month:
+        now = datetime.now()
+        year = now.year
+        month = now.month
+
+    with daily_stats_lock:
+        stats = load_daily_stats()
+        
     data = {}
-    for i in range(1, 32):
-        if random.random() > 0.3:
-            data[i] = round(random.uniform(-80, 200), 2)
+    # 筛选指定年月的记录
+    prefix = f"{year}-{month:02d}"
+    
+    for date_str, pnl in stats.items():
+        if date_str.startswith(prefix):
+            try:
+                # 提取日期 (day)
+                day = int(date_str.split("-")[2])
+                data[day] = pnl
+            except:
+                continue
+                
     return jsonify(data)
 
 # ==================== 旧版 echo ====================
@@ -2291,7 +2385,11 @@ def mt4_status():
     raw_body = request.get_data(as_text=True)
     client_ip = get_client_ip()
     headers_dict = dict(request.headers)
-    store_mt4_data(raw_body, client_ip, headers_dict)
+    _, record = store_mt4_data(raw_body, client_ip, headers_dict)
+    
+    # 异步或同步更新日历统计
+    update_daily_stats_from_record(record)
+    
     return "OK", 200
 
 @app.route("/web/api/mt4/positions", methods=["POST"])
