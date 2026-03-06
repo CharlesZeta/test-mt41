@@ -2818,10 +2818,16 @@ def send_command():
         with history_lock:
             latest_status = history_status[0] if history_status else None
             if latest_status:
-                free_margin = latest_status.get("free_margin", 0)
+                # 修复：从 parsed 结构中读取 free_margin
+                parsed = latest_status.get("parsed", {})
+                free_margin = parsed.get("free_margin", 0)
+                
                 # 粗略估算保证金：1手 ~ 1000 USD (假设杠杆100，合约100000)
                 # 实际应根据 symbol 和 leverage 计算，这里仅作演示
                 est_margin = volume * 1000 
+                
+                print(f"[RISK] Pre-Check: FreeMargin={free_margin}, EstReq={est_margin}, Vol={volume}")
+                
                 if free_margin < est_margin * 1.1: # 保留 10% 缓冲
                     print(f"[RISK] 资金不足预警: Free={free_margin}, EstReq={est_margin}")
                     # return jsonify({"success": False, "message": "资金不足 (预估)"}), 400
