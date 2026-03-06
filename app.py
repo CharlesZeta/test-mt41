@@ -2099,6 +2099,65 @@ def mt4_quote():
     store_mt4_data(raw_body, client_ip, headers_dict)
     return "OK", 200
 
+# ==================== Tick 推送接口 ====================
+@app.route('/api/tick', methods=['POST'])
+def receive_tick():
+    """
+    接收 EA 推送的 Tick 数据 (单向推送)
+    """
+    try:
+        ticks = request.json
+        if not isinstance(ticks, list):
+            ticks = [ticks]
+            
+        receive_time = int(time.time() * 1000)
+        
+        # 这里可以将 Tick 数据存入缓存，供前端轮询
+        # 简单实现：只保存最新的 QUOTE_DATA 到 history_report 队列，模拟成 QUOTE 报告
+        # 以便前端通过 /api/latest_status 轮询到
+        
+        for tick in ticks:
+            symbol = tick.get('symbol')
+            bid = tick.get('bid')
+            ask = tick.get('ask')
+            tick_time = tick.get('tick_time')
+            
+            if not symbol or not bid or not ask: continue
+            
+            # 构造一个伪造的 QUOTE_DATA 报告存入 history_report
+            # 这样前端 refreshData -> /api/latest_status -> latest_quote 逻辑就能复用
+            
+            quote_msg = json.dumps({
+                "bid": bid,
+                "ask": ask
+            })
+            
+            record = {
+                "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "ip": get_client_ip(),
+                "method": "POST",
+                "path": "/api/tick",
+                "category": "report", # 伪装成 report
+                "headers": {},
+                "body_raw": json.dumps(tick),
+                "parsed": {
+                    "desc": "QUOTE_DATA",
+                    "spread": tick.get('spread', 0), # 假设 EA 没传 spread 就算了
+                    "ts": tick_time, # 使用 EA 的 tick_time
+                    "message": quote_msg,
+                    "account": "tick_stream" # 标识来源
+                }
+            }
+            
+            with history_lock:
+                history_report.appendleft(record)
+
+        return '', 204 # No Content, 快速响应
+        
+    except Exception as e:
+        print(f"Error processing tick: {e}")
+        return jsonify({'error': str(e)}), 500
+
 # ==================== 网页发单 ====================
 @app.route("/send_command", methods=["POST"])
 def send_command():
@@ -2130,7 +2189,7 @@ def send_command():
     lots = norm_volume(lots_raw) if lots_raw else None
     price = norm_volume(price_raw) if price_raw else None
 
-    # 强校验
+    # 强校验与风控
     if cmd_type in ("MARKET", "LIMIT"):
         if not symbol:
             print("[BLOCK] symbol 为空")
@@ -2141,6 +2200,27 @@ def send_command():
         if volume <= 0:
             print("[BLOCK] volume 必须 > 0")
             return redirect(url_for("index"))
+            
+        # 风控：单笔手数限制 (示例: 最大 5 手)
+        if volume > 5.0:
+            print("[RISK] 单笔手数超过限制 (Max 5.0)")
+            return jsonify({"success": False, "message": "单笔手数超过限制 (Max 5.0)"}), 400
+            
+        # 风控：资金预检 (简单模拟)
+        # 假设我们从 latest_status 获取 free_margin
+        # 注意：这里可能拿到的是旧数据，严格风控应在 EA 端再次校验
+        # 这里仅作前端/网关层面的快速拦截
+        with history_lock:
+            latest_status = history_status[0] if history_status else None
+            if latest_status:
+                free_margin = latest_status.get("free_margin", 0)
+                # 粗略估算保证金：1手 ~ 1000 USD (假设杠杆100，合约100000)
+                # 实际应根据 symbol 和 leverage 计算，这里仅作演示
+                est_margin = volume * 1000 
+                if free_margin < est_margin * 1.1: # 保留 10% 缓冲
+                    print(f"[RISK] 资金不足预警: Free={free_margin}, EstReq={est_margin}")
+                    # return jsonify({"success": False, "message": "资金不足 (预估)"}), 400
+                    # 暂时仅打印日志，不硬拦截，以免误杀
     elif cmd_type == "CLOSE":
         if not ticket:
             print("[BLOCK] ticket 为空")
