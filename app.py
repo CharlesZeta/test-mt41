@@ -1311,32 +1311,35 @@ HTML_TEMPLATE = r"""<!doctype html>
     window.updateCalculations = function() {
       const { marginPct, leverage, price, contractSize, pointSize, equity, availMargin } = window.quantState;
       
-      // Bug 2: 修正滑轮逻辑，改为直接调整手数比例
-      // 计算当前杠杆和余额下的最大可开仓手数
-      // MaxLots = (AvailMargin * Leverage) / (ContractSize * Price)
-      // 注意：这里用 price 近似计算，实际可能略有偏差
-      let maxLots = 0;
-      if (price > 0 && contractSize > 0) {
-          maxLots = (availMargin * leverage) / (contractSize * price);
+      // 更新滑轮最大值为可用余额
+      const marginSlider = $('marginSlider');
+      if(marginSlider) {
+          // 确保 max 至少为 1，防止为 0 时无法拖动
+          const maxVal = Math.floor(availMargin > 0 ? availMargin : 100);
+          if(parseFloat(marginSlider.max) !== maxVal) {
+              marginSlider.max = maxVal;
+          }
       }
+
+      // 获取当前滑轮值（作为使用保证金金额）
+      // 注意：这里我们复用 marginPct 变量来存储滑轮的值（即 Used Margin Amount）
+      const usedMargin = marginPct; 
       
-      // 根据滑轮百分比计算当前手数
-      let calculatedLots = maxLots * (marginPct / 100);
+      // 计算手数
+      // Lots = (UsedMargin * Leverage) / (ContractSize * Price)
+      let calculatedLots = 0;
+      if (price > 0 && contractSize > 0) {
+          calculatedLots = (usedMargin * leverage) / (contractSize * price);
+      }
       
       // 简单的手数计算保护
       if (!isFinite(calculatedLots) || calculatedLots < 0) calculatedLots = 0;
       calculatedLots = Math.floor(calculatedLots * 100) / 100; 
       
-      // 反算占用保证金
-      // UsedMargin = (Lots * ContractSize * Price) / Leverage
-      let usedMargin = 0;
-      if (leverage > 0) {
-          usedMargin = (calculatedLots * contractSize * price) / leverage;
-      }
-      
       window.quantState.lots = calculatedLots;
 
-      $('pctText').innerText = marginPct;
+      // 更新 UI 显示
+      $('pctText').innerText = usedMargin; // 显示使用保证金金额
       $('lotsText').innerText = calculatedLots.toFixed(2);
 
       // 计算名义价值用于止损估算
@@ -1648,9 +1651,20 @@ HTML_TEMPLATE = r"""<!doctype html>
     
     // 自动刷新数据
     async function refreshData() {
+        // 记录性能开始时间
+        const startTime = performance.now();
+        
         try {
             const res = await fetch('/api/latest_status');
+            
+            if(!res.ok) throw new Error(`HTTP ${res.status}`);
+            
             const data = await res.json();
+            
+            // 记录性能结束时间并打印日志 (性能监控)
+            const endTime = performance.now();
+            console.log(`[Perf] RefreshData took ${(endTime - startTime).toFixed(2)}ms`);
+
             if(data) {
                 // 更新账户数据
                 const equity = data.equity || 0;
@@ -1658,6 +1672,15 @@ HTML_TEMPLATE = r"""<!doctype html>
                 
                 window.quantState.equity = equity;
                 window.quantState.availMargin = freeMargin;
+                
+                // 更新滑轮 max
+                const marginSlider = $('marginSlider');
+                if(marginSlider) {
+                    const maxVal = Math.floor(freeMargin > 0 ? freeMargin : 100);
+                    if(parseFloat(marginSlider.max) !== maxVal) {
+                        marginSlider.max = maxVal;
+                    }
+                }
                 
                 $('equityVal').innerText = fmtNum(equity, 2);
                 $('availMarginStr').innerText = fmtNum(freeMargin, 2);
@@ -1683,15 +1706,15 @@ HTML_TEMPLATE = r"""<!doctype html>
                     $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
                     priceUpdated = true;
                     
-                    // 更新信号灯时间戳
+                    // 更新信号灯时间戳 (1.5s 阈值)
                     const nowTs = Math.floor(Date.now() / 1000);
                     const diff = nowTs - quote.ts;
                     const dot = $('latencySignal');
                     if(dot) {
-                        if(diff <= 3) {
-                            dot.className = 'signal-dot green'; dot.title = '实时 (<3s)';
+                        if(diff <= 1.5) { // 用户要求 1.5s
+                            dot.className = 'signal-dot green'; dot.title = '实时 (<1.5s)';
                         } else if(diff <= 10) {
-                            dot.className = 'signal-dot yellow'; dot.title = '延迟 (3-10s)';
+                            dot.className = 'signal-dot yellow'; dot.title = '延迟 (1.5-10s)';
                         } else {
                             dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
                         }
@@ -1714,7 +1737,7 @@ HTML_TEMPLATE = r"""<!doctype html>
                     if(dot && data.ts) {
                         const nowTs = Math.floor(Date.now() / 1000);
                         const diff = nowTs - data.ts;
-                        if(diff <= 3) {
+                        if(diff <= 3) { // Status 频率较低，放宽到 3s
                             dot.className = 'signal-dot green'; dot.title = '实时 (<3s)';
                         } else if(diff <= 10) {
                             dot.className = 'signal-dot yellow'; dot.title = '延迟 (3-10s)';
@@ -1728,7 +1751,15 @@ HTML_TEMPLATE = r"""<!doctype html>
                 
                 window.updateCalculations();
             }
-        } catch(e) { console.error(e); }
+        } catch(e) { 
+            console.error("[Refresh Error]", e);
+            // 降级提示
+            const dot = $('latencySignal');
+            if(dot) {
+                dot.className = 'signal-dot red'; 
+                dot.title = '网络连接错误';
+            }
+        }
     }
     
     function updatePositionsList(positions) {
@@ -1824,11 +1855,13 @@ def submit_order_v1():
                 cmd["account"] = account
 
     # 判断类型
-    # type: "market", "limit", "market_tpsl", "limit_tpsl"
+    # type: "market", "limit", "market_tpsl", "limit_tpsl", "quote"
     # 平仓逻辑特殊处理
     if side_raw == 'CLOSE':
         cmd["action"] = "close"
         cmd["ticket"] = int(data.get("ticket"))
+    elif side_raw == 'QUOTE' or cmd_type_raw == 'quote':
+        cmd["action"] = "quote"
     elif "limit" in cmd_type_raw:
         cmd["action"] = "limit"
         cmd["side"] = "buy" if side_raw.upper() == "BUY" else "sell"
