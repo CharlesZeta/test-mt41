@@ -114,14 +114,12 @@ cleanup_thread.start()
 
 # ==================== 时间限制函数 ====================
 def is_restricted_time():
-    """判断当前时间是否处于限制时段（0:30 - 4:30）"""
+    """判断当前时间是否处于限制时段（0:00 - 5:00 禁止交易）"""
     now = datetime.now()
-    h, m = now.hour, now.minute
-    if h == 0 and m >= 30:
-        return True
-    if 1 <= h <= 3:
-        return True
-    if h == 4 and m <= 30:
+    h = now.hour
+    # 规则：只有 5:00 - 24:00 允许交易 (即 [5, 24))
+    # 禁止时段: 0, 1, 2, 3, 4 点
+    if 0 <= h < 5:
         return True
     return False
 
@@ -1061,7 +1059,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       border-radius: var(--radius); box-shadow: var(--shadow); 
       border: 1px solid var(--line); 
     }
-    .symLeftTime { font-family: monospace; font-weight: 700; color: var(--muted); font-size: 0.875rem; justify-self: start; }
+    .symLeftTime { font-family: monospace; font-weight: 700; color: var(--muted); font-size: 2rem; justify-self: start; }
     .symCenter { display: flex; flex-direction: column; align-items: center; justify-self: center; gap: 0.25rem; }
     .symName { display: flex; align-items: center; gap: 0.625rem; font-size: 1.625rem; font-weight: 800; }
     .symBadge { 
@@ -1992,7 +1990,47 @@ HTML_TEMPLATE = r"""<!doctype html>
       }
     };
 
+    window.checkTradeTime = function() {
+        const now = new Date();
+        const h = now.getHours();
+        const isRestricted = (h >= 0 && h < 5); // 0:00 - 5:00
+        
+        const mainGrid = document.querySelector('.main-grid');
+        const nightMode = document.getElementById('nightMode');
+        
+        if (isRestricted) {
+            if (mainGrid) mainGrid.style.display = 'none';
+            if (!nightMode) {
+                // 插入夜间模式占位图
+                const div = document.createElement('div');
+                div.id = 'nightMode';
+                div.style.textAlign = 'center';
+                div.style.padding = '3rem 1rem';
+                div.innerHTML = `
+                    <div style="font-size: 2.5rem; margin-bottom: 1rem;">😴</div>
+                    <div style="font-size: 1.5rem; font-weight: 800; color: var(--text); margin-bottom: 0.5rem;">交易已暂停</div>
+                    <div style="color: var(--muted); font-weight: 600;">每日 0:00 - 5:00 为系统维护时段</div>
+                    <div style="margin-top: 2rem; font-family: 'STKaiti', serif; font-size: 2rem; color: #d4af37; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">为人民服务</div>
+                    <div style="margin-top: 0.5rem; font-family: monospace; color: var(--muted); font-size: 1.25rem;">${now.getFullYear()}年${String(now.getMonth()+1).padStart(2,'0')}月${String(now.getDate()).padStart(2,'0')}日 ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}</div>
+                `;
+                // 插入到 main-grid 之后
+                mainGrid.parentNode.insertBefore(div, mainGrid.nextSibling);
+            } else {
+                // 更新时间
+                const timeEl = nightMode.querySelector('div:last-child');
+                if(timeEl) timeEl.innerText = `${now.getFullYear()}年${String(now.getMonth()+1).padStart(2,'0')}月${String(now.getDate()).padStart(2,'0')}日 ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+            }
+        } else {
+            if (mainGrid) mainGrid.style.display = 'flex';
+            if (nightMode) nightMode.remove();
+        }
+    };
+
     window.onload = () => {
+      // 启动时间检查
+      setInterval(window.checkTradeTime, 1000);
+      window.checkTradeTime();
+
       // 默认使用市价单，避免用户不填价格导致拒单
       window.setOrderType('market', '市价');
       const marginSlider = $('marginSlider');
