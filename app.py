@@ -1433,7 +1433,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       const area = $('dynamicFormArea');
       const renderInput = (lbl, placeholder, id) => `
         <div class="form-row" style="cursor:text">
-          <label>${lbl}</label><input type="number" id="${id}" placeholder="${placeholder}">
+          <label>${lbl}</label><input type="text" inputmode="decimal" id="${id}" placeholder="${placeholder}">
         </div>`;
       
       let html = '';
@@ -1442,7 +1442,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       else if(typeCode === 'limit') { html += renderInput('触发价', '0.00', 'inpPrice'); }
       else if(typeCode === 'limit_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); html += renderInput('触发价', '0.00', 'inpPrice'); }
       
-      html += renderInput('有效期 (分钟)', '默认 10 分钟', 'inpTTL');
+      html += renderInput('订单有效期 (分)', '默认 10 分钟', 'inpTTL');
       area.innerHTML = html;
     };
 
