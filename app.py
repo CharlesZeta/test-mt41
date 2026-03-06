@@ -114,12 +114,12 @@ cleanup_thread.start()
 
 # ==================== 时间限制函数 ====================
 def is_restricted_time():
-    """判断当前时间是否处于限制时段（0:00 - 4:00 禁止交易）"""
+    """判断当前时间是否处于限制时段（0:00 - 5:00 禁止交易）"""
     now = datetime.now()
     h = now.hour
-    # 规则：只有 4:00 - 24:00 允许交易
-    # 禁止时段: 0, 1, 2, 3 点
-    if 0 <= h < 4:
+    # 规则：只有 5:00 - 24:00 允许交易 (即 [5, 24))
+    # 禁止时段: 0, 1, 2, 3, 4 点
+    if 0 <= h < 5:
         return True
     return False
 
@@ -1847,14 +1847,139 @@ HTML_TEMPLATE = r"""<!doctype html>
       // 贵金属 XAUUSD point=0.01
       
       // 重新计算单手每点价值 (USD)
-      // 对于 USD 结尾的品种，Rate=1
-      // ValuePerPoint = ContractSize * PointSize
-      const valuePerPoint = contractSize * pointSize;
+      // 用户描述公式：一首黄金为500000（开仓价格*开仓合约手数*杠杆）/ 黄金实时价格 即为每点波动价值
+      // 注意：这里的描述可能有点混淆。通常每点波动价值 (Tick Value) = ContractSize * PointSize
+      // 但如果是以报价货币计价 (如 USD)，通常就是这个公式。
+      // 用户提到的公式：(OpenPrice * ContractSize * Leverage) / CurrentPrice
+      // 这看起来更像是计算保证金的某种变体？或者是基于名义价值反推？
+      // 让我们仔细分析用户的例子：
+      // "比如黄金5000元；一首黄金为500000（开仓价格*开仓合约手数*杠杆）" -> 这里 5000 * 100 * 1 = 500,000 ? 这里的杠杆是 1 吗？如果是 500 倍杠杆，那名义价值是 5000 * 100 = 500,000。
+      // "/ 黄金实时价格即为每点波动价值" -> 500,000 / 5000 = 100。
+      // 100 是什么？是每点价值吗？XAUUSD Point=0.01。每点价值通常是 1 USD (100 * 0.01)。
+      // 如果结果是 100，那应该是每 1 美元波动的价值 (100 * 1)。
       
-      // 总波动价值 = ValuePerPoint * Lots
-      const totalPointVal = valuePerPoint * calculatedLots;
+      // 用户的描述可能意指：每变动 1 个单位价格 (如 1 USD) 的价值。
+      // 而不是 Point (0.01 USD)。
+      // 但界面标签是 "每点波动"，通常指 Point。
       
-      $('calcPpVal').innerText = totalPointVal.toFixed(2) + " USD";
+      // 让我们再看公式：(Price * Size * Lev) / Price = Size * Lev
+      // 如果 Lev=500, Size=100, 那结果是 50000。这显然太大了。
+      
+      // 也许用户意思是：(Price * Size) / Price = Size。
+      // 也许用户想表达的是：每变动 1% 的价值？
+      
+      // 让我们严格按用户文字实现：
+      // "一首黄金为500000（开仓价格*开仓合约手数*杠杆）/ 黄金实时价格 即为每点波动价值"
+      // 假设：开仓价 5000, 合约 100, 杠杆 ? 
+      // 如果 "一首黄金为 500000"，那可能是 名义价值 = 5000 * 100 = 500,000 (无杠杆?) 或者包含杠杆的名义价值？
+      // 通常名义价值 (Notional) = Price * Size * Lots。
+      // 如果用户说的是 "名义价值 / 实时价格"，那结果就是 Size * Lots。
+      // Size * Lots * PointSize = 每点价值。
+      
+      // 现在的代码是：
+      // const valuePerPoint = contractSize * pointSize;
+      // const totalPointVal = valuePerPoint * calculatedLots;
+      // 这就是标准的每点价值计算。
+      
+      // 用户可能觉得之前算的太小 (0.71 USD)，因为之前是按照 0.71 手算的。
+      // 如果 0.71 手，每点价值应该是 0.71 USD (XAUUSD)。
+      // 难道用户认为应该是 71 USD？那意味着他认为 Point 是 1.0 而不是 0.01。
+      
+      // 既然用户给出了明确公式，我们尝试理解：
+      // "500000 ... / 黄金实时价格" -> 500000 / 5000 = 100。
+      // 这正好是 ContractSize (100)。
+      // 所以每点波动价值 = 100 ?
+      // 如果 Point=0.01，那 100 对应的是 1 USD 的波动 (100 points)。
+      // 所以用户可能把 "每点" 理解为 "每 1 美元价格波动"。
+      
+      // 但界面上写的是 "每点波动"，通常对应 MT4 的 Point。
+      // 不过为了满足用户，我们按他的公式来：
+      // 结果 = (名义价值 * 杠杆) / 当前价格 ? 不，名义价值本身就包含了价格。
+      // 用户公式核心：(Price * Size * Lots * Lev) / Price = Size * Lots * Lev
+      // 如果 Lev=500，那结果巨大。
+      
+      // 让我们再次阅读："比如黄金5000元；一首黄金为500000（开仓价格*开仓合约手数*杠杆）"
+      // 这里 5000 * 100 = 500,000。这里没乘杠杆，或者杠杆是1？
+      // 如果乘了 500，那就是 2.5 亿。
+      // 所以 "500000" 应该是 名义价值 (Notional Value)。
+      // 然后 "/ 黄金实时价格" -> 500,000 / 5000 = 100。
+      // 这里的 100 就是 1 手的 Contract Size。
+      // 所以用户定义的 "每点波动" = ContractSize * Lots。
+      // 这实际上是 "每变动 1.0 报价单位的盈亏"。
+      
+      // 既然用户强调 "数值非百分比"，我们按此逻辑：
+      // 每点波动 (用户定义) = (Notional * Leverage) / Price ... 等等，用户括号里写了 *杠杆。
+      // 如果真乘杠杆，数值会非常大。
+      // 假设用户笔误，其实是想算每 1 美元波动的价值。
+      
+      // 让我们尝试实现：
+      // TotalPointVal = (Notional * Leverage) / Price * PointSize
+      // 如果按用户公式：(5000 * 100 * 500) / 5000 = 50000。
+      // 50000 * 0.01 = 500 USD。
+      // 这意味着每点波动 500 USD？这相当于 500 手。
+      
+      // 也许用户是想说：保证金 * 杠杆 = 名义价值。
+      // 然后 名义价值 / 价格 = 数量 (Size * Lots)。
+      // 数量 * PointSize = 每点价值。
+      
+      // 让我们暂时忽略 "杠杆" 这个词，仅按 "500000 / 5000 = 100" 理解。
+      // 这就是 Size * Lots。
+      // 如果 PointSize = 0.01，那标准每点价值是 Size * Lots * 0.01 = 1。
+      // 用户算出来是 100。相差 100 倍。
+      // 这意味着用户认为 "每点" = 1.0 USD 价格变动。
+      
+      // 既然用户要求 "计算当前设置下每点波动基于...对每点波动"，
+      // 我们保留原有的 PointSize 逻辑，但尝试适配用户的数值感。
+      // 如果用户想要的是 "每变动 1 美元的价值"，那我们就显示这个。
+      // 但标签是 "每点"，我们最好显示 "每点 (0.01) 价值"。
+      
+      // 决定：严格执行用户给的文字公式，看看结果。
+      // 公式：(OpenPrice * Size * Lots * Leverage) / CurrentPrice
+      // = Size * Lots * Leverage (假设 Open ~= Current)
+      // 如果 Lev=500，Lots=1，Size=100 -> 50000。
+      // 这完全不合理。
+      
+      // 重新解读："一首黄金为500000" -> 可能是 100 oz * 5000 USD/oz = 500,000 USD。这是合约价值。
+      // "(开仓价格*开仓合约手数*杠杆)" -> 这里的杠杆可能用户理解错了，或者是"合约乘数"？
+      // 忽略括号里的杠杆。
+      // 500,000 / 5000 = 100。
+      // 即：名义价值 / 价格 = 持仓量 (盎司/单位数)。
+      // 结论：用户定义的 "每点波动" 其实是 "每变动 1 单位价格的盈亏"。
+      // 也就是 Delta = 1.0 时的 PnL。
+      
+      // 我们把 PointSize 设为 1.0 (即每变动 1 美元) 来计算这个值展示给用户？
+      // 或者保持 PointSize，但按用户公式算？
+      
+      // 考虑到用户之前说 "0.71 USD" (0.71手 * 100 * 0.01 = 0.71) 是 "过小的数值"，
+      // 他可能期望看到 71 USD (即价格变动 1 美元的盈亏)。
+      
+      // 修正逻辑：
+      // 显示 "每 1 美元波动价值" (Per 1.0 Price Move)
+      // Value = Lots * ContractSize
+      
+      const totalPointVal = calculatedLots * contractSize;
+      $('calcPpVal').innerText = totalPointVal.toFixed(2) + " USD / 1.0 Price";
+      
+      // 但还要用于强平计算。强平计算依赖 PointValue。
+      // 如果我们改了 totalPointVal 的定义，强平计算也要改。
+      // 强平计算：
+      // 距离 = Equity / (Value per 1.0 Price)
+      // 强平价 = Price - 距离
+      
+      // 这样逻辑是自洽的。
+      
+      // 唯一问题：用户文字里提到的 "杠杆"。
+      // 如果加上杠杆，数值会大 500 倍。
+      // 假设用户对 "杠杆" 的理解有误，或者是想表达 "名义价值"。
+      // 我们采用 "名义价值 / 价格" 这个核心逻辑，即 Lots * Size。
+      
+      // 修改代码：
+      // calcPpVal 显示为： Lots * Size (即每变动 1.0 价格的价值)
+      // calcLiq 使用这个值计算距离。
+      
+      // 总波动价值 (每 1.0 价格变动)
+      const valPerPriceUnit = calculatedLots * contractSize;
+      $('calcPpVal').innerText = valPerPriceUnit.toFixed(2) + " USD"; // 显示纯数值
       
       // 止损估算 (基于开仓名义价值)
       // 用户要求：固定百分比止损额度按照合约手数杠杆*手数乘以固定百分比计算
@@ -1887,16 +2012,13 @@ HTML_TEMPLATE = r"""<!doctype html>
       // 我们可以显示：账户净值能扛多少点
       
       let liqPrice = 0;
-       if (totalPointVal > 0 && equity > 0) {
-           // 可抗点数 = 净值 / 每点总价值
-           // 注意：这里的 totalPointVal 是每变动 1 Point 的价值
-           // 比如 XAUUSD, Point=0.01
-           // 如果 totalPointVal = 10 USD (即 1手), 净值 1000 USD
-           // 可抗点数 = 1000 / 10 = 100 Points
-           // 价格距离 = 100 * 0.01 = 1.0 USD
+       if (valPerPriceUnit > 0 && equity > 0) {
+           // 可抗价格变动 = 净值 / 每变动 1.0 价格的价值
+           // 例如：净值 1000 USD, 1手黄金 (Size 100) -> valPerPriceUnit = 100 USD
+           // 可抗价格变动 = 1000 / 100 = 10 USD
+           // 强平价 = 2350 - 10 = 2340
            
-           const pointsToLiq = equity / totalPointVal; 
-           const priceDist = pointsToLiq * pointSize;
+           const priceDist = equity / valPerPriceUnit;
            
            // 假设做多，强平价 = 当前价 - 距离
            // 假设做空，强平价 = 当前价 + 距离
@@ -2109,8 +2231,8 @@ HTML_TEMPLATE = r"""<!doctype html>
         const now = new Date();
         const h = now.getHours();
         
-        // 1. 基础时间限制 (0:00 - 4:00)
-        const isTimeRestricted = (h >= 0 && h < 4); 
+        // 1. 基础时间限制 (0:00 - 5:00)
+        const isTimeRestricted = (h >= 0 && h < 5); 
         
         // 2. 后端风控状态 (从 refreshData 获取)
         const riskStatus = window.quantState ? window.quantState.riskStatus : 'normal';
@@ -2120,7 +2242,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         // 优先级: 熔断 > 冷静期 > 时间限制
         let isRestricted = false;
         let title = "交易已暂停";
-        let subTitle = "每日 0:00 - 4:00 为系统维护时段";
+        let subTitle = "每日 0:00 - 5:00 为系统维护时段";
         let slogan = "为人民服务";
         
         if (riskStatus === 'fused') {
@@ -2687,9 +2809,9 @@ def index():
 def submit_order_v1():
     global cmd_counter
     
-    # 1. 基础时间限制 (0:00 - 4:00)
+    # 1. 基础时间限制 (0:00 - 5:00)
     if is_restricted_time():
-        return jsonify({"success": False, "message": "非交易时段 (0:00-4:00)，禁止下单"}), 403
+        return jsonify({"success": False, "message": "非交易时段 (0:00-5:00)，禁止下单"}), 403
 
     data = request.json
     print(f"【API】收到下单请求: {data}")
