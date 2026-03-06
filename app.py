@@ -114,12 +114,12 @@ cleanup_thread.start()
 
 # ==================== 时间限制函数 ====================
 def is_restricted_time():
-    """判断当前时间是否处于限制时段（0:00 - 5:00 禁止交易）"""
+    """判断当前时间是否处于限制时段（0:00 - 4:00 禁止交易）"""
     now = datetime.now()
     h = now.hour
-    # 规则：只有 5:00 - 24:00 允许交易 (即 [5, 24))
-    # 禁止时段: 0, 1, 2, 3, 4 点
-    if 0 <= h <4:
+    # 规则：只有 4:00 - 24:00 允许交易
+    # 禁止时段: 0, 1, 2, 3 点
+    if 0 <= h < 4:
         return True
     return False
 
@@ -2097,8 +2097,8 @@ HTML_TEMPLATE = r"""<!doctype html>
         const now = new Date();
         const h = now.getHours();
         
-        // 1. 基础时间限制
-        const isTimeRestricted = (h >= 0 && h < 5); // 0:00 - 5:00
+        // 1. 基础时间限制 (0:00 - 4:00)
+        const isTimeRestricted = (h >= 0 && h < 4); 
         
         // 2. 后端风控状态 (从 refreshData 获取)
         const riskStatus = window.quantState ? window.quantState.riskStatus : 'normal';
@@ -2108,7 +2108,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         // 优先级: 熔断 > 冷静期 > 时间限制
         let isRestricted = false;
         let title = "交易已暂停";
-        let subTitle = "每日 0:00 - 5:00 为系统维护时段";
+        let subTitle = "每日 0:00 - 4:00 为系统维护时段";
         let slogan = "为人民服务";
         
         if (riskStatus === 'fused') {
@@ -2661,9 +2661,9 @@ def index():
 def submit_order_v1():
     global cmd_counter
     
-    # 1. 基础时间限制 (0:00 - 5:00)
+    # 1. 基础时间限制 (0:00 - 4:00)
     if is_restricted_time():
-        return jsonify({"success": False, "message": "非交易时段 (0:00-5:00)，禁止下单"}), 403
+        return jsonify({"success": False, "message": "非交易时段 (0:00-4:00)，禁止下单"}), 403
 
     data = request.json
     print(f"【API】收到下单请求: {data}")
