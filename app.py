@@ -724,79 +724,58 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
       box-shadow: var(--shadow);
     }
 
-    /* 盘口卡片（左） */
+    /* 盘口卡片（左）- 新布局 */
     .orderbook{
       padding: 12px;
     }
-    .obHeader{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap:10px;
-      margin-bottom:10px;
-    }
-    .obMeta{
-      display:flex;
-      flex-direction:column;
-      gap:2px;
-      color:var(--muted);
-      font-weight:700;
-      font-size:12px;
-    }
-    .obTable{
+    .obTopStats{
       display:grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px 10px;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 12px;
       font-variant-numeric: tabular-nums;
-      font-size: 13px;
     }
-    .obHead{
-      color:var(--muted);
-      font-weight:800;
-      font-size:12px;
+    .obStatLabel{
+      font-size: 10px;
+      font-weight: 800;
+      color: var(--muted);
+      margin-bottom: 2px;
     }
-    .priceRed{ color: var(--red); font-weight:900; }
-    .priceGreen{ color: #18a66b; font-weight:900; }
+    .obStatVal{
+      font-weight: 1000;
+      font-size: 12px;
+      color: #222;
+    }
 
     .midPrice{
       text-align:center;
-      margin: 12px 0 10px;
-      font-size: 28px;
+      margin: 8px 0 4px;
+      font-size: 26px;
       font-weight: 1000;
       letter-spacing: .3px;
     }
     .midSub{
       text-align:center;
-      margin-top:-6px;
+      margin-top:-4px;
       color:var(--muted);
       font-weight:700;
-      font-size:12px;
+      font-size:11px;
     }
-    .ratioBar{
-      display:flex;
-      align-items:center;
-      gap:8px;
-      margin-top:12px;
+    .statsNew{
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--line);
     }
-    .bar{
-      flex:1;
-      height:8px;
-      background:#e8edf4;
-      border-radius:999px;
-      overflow:hidden;
-      display:flex;
-    }
-    .bar > div{ height:100%; }
-    .barBuy{ background: var(--green); width:63%; }
-    .barSell{ background: var(--red); width:37%; }
-    .barText{
+    .statRowNew{
       display:flex;
       justify-content:space-between;
-      font-size:12px;
-      font-weight:800;
-      color:var(--muted);
-      margin-top:6px;
+      gap:12px;
+      margin: 5px 0;
+      font-variant-numeric: tabular-nums;
+      font-size: 12px;
     }
+    .statRowNew.k{ color:var(--muted); font-weight: 800; }
+    .statRowNew.v{ font-weight: 1000; }
 
     /* 下单卡片（右） */
     .order{
@@ -847,8 +826,28 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
       color:#9aa0a8;
       font-weight:800;
       margin-bottom:10px;
+      font-size: 12px;
     }
     .field strong{ color:#222; }
+    .field[role="button"]{
+      cursor:pointer;
+      transition: background .15s ease, border-color .15s ease;
+    }
+    .field[role="button"]:hover{
+      background: #eef1f7;
+      border-color: #d3d8e2;
+    }
+    .field input{
+      border:none;
+      background:transparent;
+      color:#222;
+      font-weight:900;
+      text-align:right;
+      width:80px;
+      outline:none;
+      font-family:inherit;
+    }
+
     .toggles{
       display:flex;
       flex-direction:column;
@@ -1191,32 +1190,81 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
     <div class="symRow">
       <div class="symLeft">
         <div class="symName">
-          <input type="text" id="symInput" placeholder="输入交易品种如 BTCUSDT" style="font-size:18px;font-weight:900;border:1px solid var(--line);border-radius:8px;padding:4px 8px;width:180px;">
+          <span id="symName">ETHUSDT</span>
+          <span class="symBadge">永续</span>
+          <span class="symBadge" style="cursor:pointer" id="btnPick">▼</span>
         </div>
+        <div class="symPnl" id="symChg">-3.71%</div>
+      </div>
+      <div class="symRight">
+        <button class="iconBtn" title="K线">📈</button>
+        <button class="iconBtn" title="设置">⚙️</button>
+        <button class="iconBtn" title="更多">⋯</button>
       </div>
     </div>
 
     <div class="grid">
-      <!-- 交易面板 -->
-      <div class="card order" style="width:100%">
+      <!-- 左：盘口 -->
+      <div class="card orderbook">
+        <div class="obTopStats">
+          <div>
+            <div class="obStatLabel">仓位入金额</div>
+            <div class="obStatVal" id="posEntry">-- USDT</div>
+          </div>
+          <div>
+            <div class="obStatLabel">仓位当前资金额度</div>
+            <div class="obStatVal" id="posNow">-- USDT</div>
+          </div>
+          <div>
+            <div class="obStatLabel">杠杆比</div>
+            <div class="obStatVal" id="posLev">--x</div>
+          </div>
+        </div>
+
+        <div class="midPrice" id="mid">--</div>
+        <div class="midSub">当前合约最新价 (USDT)</div>
+
+        <div class="statsNew">
+          <div class="statRowNew">
+            <span class="k">当日收益</span>
+            <span class="v" id="dayPnl">-- USDT</span>
+          </div>
+          <div class="statRowNew">
+            <span class="k">当日收益率</span>
+            <span class="v" id="dayPnlPct">--%</span>
+          </div>
+          <div class="statRowNew">
+            <span class="k">可用保证金</span>
+            <span class="v" id="availMargin">-- USDT</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 右：下单 -->
+      <div class="card order">
         <div class="row">
           <div class="chips">
             <div class="chip primary">全仓</div>
             <div class="chip" id="btnLev">20x</div>
+            <div class="chip">联</div>
           </div>
           <div class="label">可用 <span class="val" id="avail">--</span> USDT</div>
         </div>
 
-        <!-- 交易品种输入 -->
-        <div class="field">
-          <span>交易品种</span>
-          <input type="text" id="tradeSymbol" placeholder="如 BTCUSDT" style="border:none;background:transparent;font-weight:900;text-align:right;width:120px;">
+        <!-- 交易类型选择 -->
+        <div class="field" id="orderTypeField" role="button">
+          <span id="orderTypeText">市价</span>
+          <strong>交易类型 ▾</strong>
         </div>
 
+        <!-- 数量输入 (手动添加以确保兼容性) -->
         <div class="field">
           <span>数量 (手)</span>
-          <input type="number" id="tradeLots" placeholder="0.01" style="border:none;background:transparent;font-weight:900;text-align:right;width:80px;">
+          <input type="number" id="tradeLots" placeholder="0.01" step="0.01">
         </div>
+
+        <!-- 动态表单区域 -->
+        <div id="dynamicFields"></div>
 
         <!-- 滑轮组：仓位比例 -->
         <div class="wheelWrap">
@@ -1235,14 +1283,20 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
         <div class="riskTip" id="riskTip">
           <div class="lamp" id="lamp"></div>
           <div>
-            风险提示：每点波动≈ <span id="perPointMoney">--</span> USDT（<span id="perPointPct">--</span>%）
+            风险暴露较高：每点波动≈ <span id="perPointMoney">--</span> USDT（<span id="perPointPct">--</span>%）
             <small>根据仓位比例和杠杆计算</small>
           </div>
+        </div>
+
+        <div class="toggles">
+          <div class="toggleRow"><span class="radio"></span> 止盈/止损</div>
+          <div class="toggleRow"><span class="radio"></span> 只减仓</div>
         </div>
 
         <div class="stats">
           <div class="statRow"><span class="k">占用保证金</span><span class="v" id="mLong">-- USDT</span></div>
           <div class="statRow"><span class="k">强平价格</span><span class="v" id="liqLong">-- USDT</span></div>
+          <div class="statRow"><span class="k">每点波动(资金/占比)</span><span class="v">≈ <span id="ppLong">--</span> USDT / <span id="ppLongPct">--</span>%</span></div>
         </div>
 
         <button class="cta buy" id="btnBuy">买入/做多</button>
@@ -1250,6 +1304,7 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
         <div class="stats" style="margin-top:14px">
           <div class="statRow"><span class="k">占用保证金</span><span class="v" id="mShort">-- USDT</span></div>
           <div class="statRow"><span class="k">强平价格</span><span class="v" id="liqShort">-- USDT</span></div>
+          <div class="statRow"><span class="k">每点波动(资金/占比)</span><span class="v">≈ <span id="ppShort">--</span> USDT / <span id="ppShortPct">--</span>%</span></div>
         </div>
 
         <button class="cta sell" id="btnSell">卖出/做空</button>
@@ -1260,9 +1315,8 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
     <div class="section">
       <div class="segTabs">
         <div class="seg active" id="segPos" onclick="switchTab('positions')">持有仓位 (0)</div>
-        <div class="seg" id="segOrd" onclick="switchTab('orders')">历史成交 (0)</div>
+        <div class="seg" id="segOrd" onclick="switchTab('orders')">当前委托 (0)</div>
       </div>
-
       <div class="listCard" id="list"></div>
     </div>
 
@@ -1273,6 +1327,25 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
     <div class="navItem">行情</div>
     <div class="navItem active">交易</div>
     <div class="navItem">资产</div>
+  </div>
+
+  <!-- 品种选择弹窗 -->
+  <div class="modalMask" id="pairMask">
+    <div class="modal">
+      <div class="modalHeader">
+        <span>选择交易品种</span>
+        <button class="btn" id="closePair">关闭</button>
+      </div>
+      <div class="modalBody">
+        <input class="search" id="pairSearch" placeholder="搜索" />
+        <div id="pairList" style="margin-top:10px"></div>
+        <div style="margin-top:12px; font-weight:1100">添加自定义品种</div>
+        <div class="addRow">
+          <input id="pairNew" placeholder="例如：XAUUSDT / SOLUSDT" />
+          <button class="primaryBtn" id="addPair">添加</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- 杠杆弹窗 -->
@@ -1287,7 +1360,6 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
           <div class="label">当前杠杆</div>
           <div class="val"><span id="levVal">20</span>x</div>
         </div>
-
         <div class="wheelWrap" style="margin-top:0">
           <div class="wheel" id="levWheel">
             <div class="track"></div>
@@ -1298,7 +1370,6 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
             * 选择超过 10x 杠杆会增加强平风险，请注意风险。
           </div>
         </div>
-
         <button class="cta" style="background:#f6c343;color:#222" id="confirmLev">确认</button>
       </div>
     </div>
@@ -1306,259 +1377,93 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
 
   <script>
     // -----------------------------
-    // 配置
-    // -----------------------------
-    const API_BASE = "";  // 同源，留空则自动使用当前域名
-
-    // -----------------------------
-    // 状态（合并 UI 状态 + MT4 数据）
+    // 数据（状态）
     // -----------------------------
     const state = {
-      // 品种列表
+      // 默认品种列表
       pairs: [
-        { sym:"BTCUSDT", last:65807.2, chg:-1.93 },
-        { sym:"ETHUSDT", last:1934.09, chg:-3.61 },
-        { sym:"BCHUSDT", last:438.62, chg:-3.06 },
-        { sym:"XRPUSDT", last:1.3430, chg:-3.87 },
-        { sym:"LTCUSDT", last:53.16, chg:-2.58 },
+        {sym: "EURUSD", last: 1.1050, chg: 0.05},
+        {sym: "GBPUSD", last: 1.2650, chg: -0.10},
+        {sym: "XAUUSDT", last: 2350.0, chg: 0.5},
+        {sym: "BTCUSDT", last: 65807.2, chg: -1.93},
+        {sym: "ETHUSDT", last: 1934.09, chg: -3.61},
       ],
-      activeSym: "ETHUSDT",
-
-      // MT4 账户数据（从 API 拉取）
-      mt4: {
-        account: "",
-        balance: 0,
-        equity: 0,
-        margin: 0,
-        free_margin: 0,
-        margin_level: 0,
-        floating_pnl: 0,
-        leverage_used: 0,
-        risk_flags: "",
-        daily_pnl: 0,
-        daily_return: 0,
-        exposure_notional: 0,
-        exposure_signal: "green",
-        positions: [],
-        trades: [],  // 历史成交
+      activeSym: "EURUSD",
+      equity: 0,
+      pct: 75,
+      leverage: 20,
+      orderType: "市价",
+      account: {
+        entry: 0,
+        now: 0,
+        dayPnl: 0,
+        dayPnlPct: 0,
+        availMargin: 0
       },
-
-      // 当前tab: positions-持仓, orders-历史成交
-      currentTab: "positions",
-
-      // UI 状态
-      pct: 75,          // 仓位比例（滑轮选择 0-100）
-      leverage: 20,     // 杠杆
       risk: {
-        long: { margin: 2274.10, liq: 1854.81, perPoint: 43.40, perPct: 1.17 },
-        short:{ margin: 2786.06, liq: 2180.96, perPoint: 27.80, perPct: 0.75 },
-        tipLevel: "yellow"
-      }
+        long: {margin: 0, liq: 0, perPoint: 0, perPct: 0},
+        short: {margin: 0, liq: 0, perPoint: 0, perPct: 0},
+        tipLevel: "green"
+      },
+      // MT4 原始数据
+      mt4: {
+        positions: [],
+        trades: []
+      },
+      currentTab: "positions"
     };
 
-    // -----------------------------
-    // API 获取 MT4 实时数据
-    // -----------------------------
-    async function fetchMT4Data() {
-      try {
-        // 从 Flask 获取最新状态数据
-        const resp = await fetch(API_BASE + "/api/latest_status");
-        if (!resp.ok) return;
-        const data = await resp.json();
-
-        if (data) {
-          // 更新 MT4 数据
-          state.mt4.account = data.account || "";
-          state.mt4.balance = data.balance || 0;
-          state.mt4.equity = data.equity || 0;
-          state.mt4.margin = data.margin || 0;
-          state.mt4.free_margin = data.free_margin || 0;
-          state.mt4.margin_level = data.margin_level || 0;
-          state.mt4.daily_pnl = data.daily_pnl || 0;
-          state.mt4.daily_return = data.daily_return || 0;
-          state.mt4.exposure_notional = data.exposure_notional || 0;
-          state.mt4.exposure_signal = data.exposure_signal || "green";
-          state.mt4.floating_pnl = data.floating_pnl || 0;
-          state.mt4.leverage_used = data.leverage_used || 0;
-          state.mt4.risk_flags = data.risk_flags || "";
-
-          // 更新持仓数据
-          state.mt4.positions = data.positions || [];
-
-          console.log("[MT4 Data] equity=", state.mt4.equity, " margin_level=", state.mt4.margin_level, " leverage_used=", state.mt4.leverage_used, " positions=", state.mt4.positions.length);
-
-          // 渲染持仓列表
-          renderPositions();
-
-          // 重新计算风控
-          calcRiskFromMT4();
-        }
-      } catch(e) {
-        console.error("[fetchMT4Data] error:", e);
-      }
-    }
-
-    // -----------------------------
-    // API 获取历史成交记录
-    // -----------------------------
-    async function fetchHistoryTrades() {
-      try {
-        const resp = await fetch(API_BASE + "/api/history_trades?limit=20");
-        if (!resp.ok) return;
-        const data = await resp.json();
-
-        if (data && data.trades) {
-          state.mt4.trades = data.trades;
-
-          // 更新历史成交数量显示
-          const segOrd = $("segOrd");
-          if (segOrd) {
-            segOrd.textContent = `历史成交 (${state.mt4.trades.length})`;
-          }
-
-          // 如果当前是历史成交tab，重新渲染
-          if (state.currentTab === "orders") {
-            renderPositions();
-          }
-        }
-      } catch(e) {
-        console.error("[fetchHistoryTrades] error:", e);
-      }
-    }
-
-    // -----------------------------
-    // Tab 切换
-    // -----------------------------
-    function switchTab(tab) {
-      state.currentTab = tab;
-
-      // 更新tab样式
-      const segPos = $("segPos");
-      const segOrd = $("segOrd");
-      if (tab === "positions") {
-        segPos.classList.add("active");
-        segOrd.classList.remove("active");
-      } else {
-        segPos.classList.remove("active");
-        segOrd.classList.add("active");
-      }
-
-      // 渲染对应内容
-      renderPositions();
-    }
-
-    // -----------------------------
-    // 根据 MT4 数据 + 仓位比例计算风控
-    // -----------------------------
-    function calcRiskFromMT4() {
-      const equity = state.mt4.equity || 5743.61;  // 兜底
-      const margin_level = state.mt4.margin_level || 0;
-      const pct = state.pct;
-      const leverage = state.leverage;
-
-      // ===== 1. 风控灯计算 =====
-      // effective_leverage = margin_level * pct / 100
-      const effective_leverage = margin_level * (pct / 100);
-
-      // 阈值判断（3倍黄，5倍红）
-      let tipLevel = "green";
-      if (effective_leverage >= 5.0) {
-        tipLevel = "red";
-      } else if (effective_leverage >= 3.0) {
-        tipLevel = "yellow";
-      }
-
-      // ===== 2. 每点收益计算 =====
-      // 优先使用 MT4 上报的 exposure_notional（每点波动对账户的盈亏金额）
-      let perPointMoney = 0;
-      let perPointPct = 0;
-
-      const exposureNotional = state.mt4.exposure_notional || 0;
-      if (exposureNotional > 0) {
-        // 直接使用 MT4 上报的每点收益
-        perPointMoney = exposureNotional;
-        perPointPct = (exposureNotional / equity) * 100;
-      } else {
-        // 兜底：自己计算
-        // 每点收益 = 仓位资金 × 杠杆 × 0.0001
-        // 仓位资金 = equity × pct%
-        const positionValue = equity * (pct / 100);
-        perPointMoney = positionValue * leverage * 0.0001;
-        perPointPct = (perPointMoney / equity) * 100;
-      }
-
-      // ===== 3. 计算所需保证金 =====
-      // 保证金 = 仓位价值 / 杠杆
-      // 仓位价值 = equity × pct%
-      const positionValue = equity * (pct / 100);
-      const requiredMargin = positionValue / leverage;
-
-      // ===== 4. 估算强平线（简化）=====
-      // 假设强平保证金比例 100%
-      const liqPrice = equity - requiredMargin;
-
-      // 更新 risk 状态
-      state.risk = {
-        long: {
-          margin: requiredMargin,
-          liq: liqPrice,
-          perPoint: perPointMoney,
-          perPct: perPointPct
-        },
-        short: {
-          margin: requiredMargin,
-          liq: liqPrice,
-          perPoint: perPointMoney,
-          perPct: perPointPct
-        },
-        tipLevel: tipLevel
-      };
-
-      // 更新 UI
-      renderRisk();
-    }
-
-    // -----------------------------
-    // 辅助函数
-    // -----------------------------
-    const $ = (id)=>document.getElementById(id);
+    const $ = (id) => document.getElementById(id);
 
     function fmtNum(n, dp=2){
       const x = Number(n);
       if (!isFinite(x)) return "--";
-      return x.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
-    }
-    function fmtPct(p){
-      const x = Number(p);
-      if (!isFinite(x)) return "--";
-      return (x>0?"+":"") + x.toFixed(2) + "%";
+      return x.toLocaleString("en-US", {minimumFractionDigits: dp, maximumFractionDigits: dp});
     }
 
     // -----------------------------
-    // 渲染（把 state 填到 UI）
+    // 渲染
     // -----------------------------
     function renderHeader(){
-      // 显示 MT4 账户可用余额
-      const displayEquity = state.mt4.equity > 0 ? state.mt4.equity : state.equity;
-      $("avail").textContent = fmtNum(displayEquity, 2);
+      const pair = state.pairs.find(p => p.sym === state.activeSym);
+      if (pair){
+        $("symName").textContent = pair.sym;
+        $("symChg").textContent = (pair.chg).toFixed(2) + "%";
+        $("symChg").style.color = pair.chg < 0 ? "var(--red)" : "var(--green)";
+        $("mid").textContent = fmtNum(pair.last, pair.last < 10 ? 4 : 2);
+      }
+      $("avail").textContent = fmtNum(state.equity, 2);
+    }
+
+    function renderAccountPanel(){
+      const a = state.account;
+      $("posEntry").textContent = fmtNum(a.entry, 2) + " USDT";
+      $("posNow").textContent = fmtNum(a.now, 2) + " USDT";
+      $("posLev").textContent = state.leverage + "x";
+      const pnlPrefix = a.dayPnl >= 0 ? "+" : "";
+      $("dayPnl").textContent = pnlPrefix + fmtNum(a.dayPnl, 2) + " USDT";
+      $("dayPnl").style.color = a.dayPnl >= 0 ? "var(--green)" : "var(--red)";
+      const pctPrefix = a.dayPnlPct >= 0 ? "+" : "";
+      $("dayPnlPct").textContent = pctPrefix + a.dayPnlPct.toFixed(2) + "%";
+      $("dayPnlPct").style.color = a.dayPnlPct >= 0 ? "var(--green)" : "var(--red)";
+      $("availMargin").textContent = fmtNum(a.availMargin, 2) + " USDT";
     }
 
     function renderRisk(){
       const r = state.risk;
-      $("mLong").textContent = fmtNum(r.long.margin,2) + " USDT";
-      $("liqLong").textContent = fmtNum(r.long.liq,2) + " USDT";
-      $("ppLong").textContent = fmtNum(r.long.perPoint,2);
-      $("ppLongPct").textContent = fmtNum(r.long.perPct,2);
+      $("mLong").textContent = fmtNum(r.long.margin, 2) + " USDT";
+      $("liqLong").textContent = fmtNum(r.long.liq, 2) + " USDT";
+      $("ppLong").textContent = fmtNum(r.long.perPoint, 2);
+      $("ppLongPct").textContent = fmtNum(r.long.perPct, 2);
 
-      $("mShort").textContent = fmtNum(r.short.margin,2) + " USDT";
-      $("liqShort").textContent = fmtNum(r.short.liq,2) + " USDT";
-      $("ppShort").textContent = fmtNum(r.short.perPoint,2);
-      $("ppShortPct").textContent = fmtNum(r.short.perPct,2);
+      $("mShort").textContent = fmtNum(r.short.margin, 2) + " USDT";
+      $("liqShort").textContent = fmtNum(r.short.liq, 2) + " USDT";
+      $("ppShort").textContent = fmtNum(r.short.perPoint, 2);
+      $("ppShortPct").textContent = fmtNum(r.short.perPct, 2);
 
-      $("perPointMoney").textContent = fmtNum(r.long.perPoint,1);
-      $("perPointPct").textContent = fmtNum(r.long.perPct,2);
+      $("perPointMoney").textContent = fmtNum(r.long.perPoint, 1);
+      $("perPointPct").textContent = fmtNum(r.long.perPct, 2);
 
-      // 指示灯颜色（绿/黄/红）
       const lamp = $("lamp");
       const tip = $("riskTip");
       if (r.tipLevel === "green"){
@@ -1582,33 +1487,45 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
       }
     }
 
-    function renderAll(){
-      renderHeader();
-      renderRisk();
-      $("pctText").textContent = state.pct;
-      $("btnLev").textContent = state.leverage + "x";
-      $("levVal").textContent = state.leverage;
-      updateWheelUI(wheelCfg, state.pct);
-      updateWheelUI(levWheelCfg, state.leverage);
+    const ORDER_TYPES = ["市价", "市价止盈止损", "限价", "限价止盈止损"];
+    function renderOrderType(){
+      $("orderTypeText").textContent = state.orderType;
+      const box = $("dynamicFields");
+      if (!box) return;
+      let html = "";
+      if (state.orderType === "市价"){
+        html = "";
+      } else if (state.orderType === "市价止盈止损"){
+        html = `
+          <div class="field"><span>止盈触发价</span><input type="text" id="inpTp" placeholder="0.00"></div>
+          <div class="field"><span>止损触发价</span><input type="text" id="inpSl" placeholder="0.00"></div>
+        `;
+      } else if (state.orderType === "限价"){
+        html = `
+          <div class="field"><span>交易触发价</span><input type="text" id="inpPrice" placeholder="0.00"></div>
+        `;
+      } else if (state.orderType === "限价止盈止损"){
+        html = `
+          <div class="field"><span>止盈触发价</span><input type="text" id="inpTp" placeholder="0.00"></div>
+          <div class="field"><span>止损触发价</span><input type="text" id="inpSl" placeholder="0.00"></div>
+          <div class="field"><span>交易触发价</span><input type="text" id="inpPrice" placeholder="0.00"></div>
+        `;
+      }
+      box.innerHTML = html;
     }
 
-    // -----------------------------
-    // 渲染持仓列表 / 历史成交
-    // -----------------------------
-    function renderPositions(){
+    function renderLists() {
       const list = $("list");
       const segPos = $("segPos");
-
-      // 根据当前tab渲染不同内容
-      if (state.currentTab === "positions") {
-        // 渲染当前持仓
+      const segOrd = $("segOrd");
+      
+      if(state.currentTab === "positions") {
+        segPos.classList.add("active");
+        segOrd.classList.remove("active");
+        
         const positions = state.mt4.positions || [];
-
-        // 更新持仓数量
-        if(segPos){
-          segPos.textContent = `持有仓位 (${positions.length})`;
-        }
-
+        segPos.textContent = `持有仓位 (${positions.length})`;
+        
         if(positions.length === 0){
           list.innerHTML = '<div style="padding:20px;text-align:center;color:#888">暂无持仓</div>';
           return;
@@ -1616,120 +1533,98 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
 
         list.innerHTML = positions.map(pos => {
           const side = (pos.side || "").toLowerCase();
-          const symbol = pos.symbol || pos.instrument || "?";
-          const lots = pos.lots || 0;
-          const openPrice = pos.open_price || pos.price || 0;
-          const profit = pos.profit || pos.pnl || 0;
-          const margin = pos.margin || 0;
-          const currentPrice = pos.current_price || openPrice;
-
-          // 简单计算收益率（如果有开仓价和当前价）
-          let pnlPct = 0;
-          if(openPrice > 0 && currentPrice){
-            pnlPct = ((currentPrice - openPrice) / openPrice) * 100 * (side === "sell" ? -1 : 1);
-          }
-
+          const profit = pos.profit || 0;
           return `
             <div class="posItem">
               <div class="posTop">
                 <div>
                   <div class="posTitle">
                     <span class="sideTag ${side}">${side === "buy" ? "买" : "卖"}</span>
-                    ${symbol}
-                    <span class="symBadge">${lots}手</span>
+                    ${pos.symbol} <span class="symBadge">${pos.lots}手</span>
                   </div>
-                  <div class="mini">未实现盈亏 (USD)</div>
+                  <div class="mini">未实现盈亏</div>
                   <div class="posPnl" style="color:${profit >= 0 ? 'var(--green)' : 'var(--red)'}">
                     ${profit >= 0 ? "+" : ""}${fmtNum(profit, 2)}
                   </div>
                 </div>
                 <div style="text-align:right">
-                  <div class="mini">收益率</div>
-                  <div class="posPnl" style="font-size:22px;color:${pnlPct >= 0 ? 'var(--green)' : 'var(--red)'}">
-                    ${pnlPct >= 0 ? "+" : ""}${fmtNum(pnlPct, 2)}%
-                  </div>
+                  <div class="mini">开仓价</div>
+                  <div class="big">${fmtNum(pos.open_price, 4)}</div>
+                  <div class="mini" style="margin-top:6px">当前价</div>
+                  <div class="big">${fmtNum(pos.current_price, 4)}</div>
                 </div>
-              </div>
-              <div class="posGrid">
-                <div><div class="mini">手数</div><div class="big">${lots}</div></div>
-                <div><div class="mini">保证金</div><div class="big">${fmtNum(margin, 2)}</div></div>
-                <div><div class="mini">开仓价</div><div class="big">${fmtNum(openPrice, 5)}</div></div>
-                <div><div class="mini">当前价</div><div class="big">${fmtNum(currentPrice, 5)}</div></div>
-              </div>
-              <div class="posActions">
-                <button class="ghost">止盈/止损</button>
-                <button class="ghost">平仓</button>
               </div>
             </div>
           `;
         }).join("");
-
+        
       } else {
-        // 渲染历史成交
+        segPos.classList.remove("active");
+        segOrd.classList.add("active");
+        
         const trades = state.mt4.trades || [];
-
+        segOrd.textContent = `当前委托 (${trades.length})`; // 其实是历史成交
+        
         if(trades.length === 0){
           list.innerHTML = '<div style="padding:20px;text-align:center;color:#888">暂无成交记录</div>';
           return;
         }
 
-        list.innerHTML = trades.map(trade => {
-          const ok = trade.ok;
-          const ticket = trade.ticket || "-";
-          const error = trade.error || "";
-          const message = trade.message || "";
-          const execMs = trade.exec_ms || 0;
-
+        list.innerHTML = trades.map(t => {
           return `
             <div class="posItem">
               <div class="posTop">
                 <div>
                   <div class="posTitle">
-                    <span class="sideTag ${ok ? 'buy' : 'sell'}">${ok ? '成功' : '失败'}</span>
-                    订单 #${ticket}
+                    <span class="sideTag ${t.ok ? 'buy' : 'sell'}">${t.ok ? '成功' : '失败'}</span>
+                    订单 #${t.ticket || '-'}
                   </div>
-                  <div class="mini">${message || error}</div>
+                  <div class="mini">${t.message || t.error}</div>
                 </div>
                 <div style="text-align:right">
-                  <div class="mini">执行时间</div>
-                  <div class="posPnl" style="font-size:16px">${execMs}ms</div>
+                   <div class="mini">耗时</div>
+                   <div class="big">${t.exec_ms}ms</div>
                 </div>
-              </div>
-              <div class="posGrid">
-                <div><div class="mini">订单号</div><div class="big">#${ticket}</div></div>
-                <div><div class="mini">状态</div><div class="big" style="color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? '成功' : '失败'}</div></div>
               </div>
             </div>
           `;
         }).join("");
       }
     }
-
-    // 弹窗辅助函数
-    function openMask(maskId){
-      const el = document.getElementById(maskId);
-      if(el) el.style.display = "flex";
+    
+    function switchTab(t){
+      state.currentTab = t;
+      renderLists();
     }
-    function closeMask(maskId){
-      const el = document.getElementById(maskId);
-      if(el) el.style.display = "none";
+    window.switchTab = switchTab;
+
+    function renderAll(){
+      renderHeader();
+      renderRisk();
+      renderAccountPanel();
+      renderOrderType();
+      renderLists();
+      $("pctText").textContent = state.pct;
+      $("btnLev").textContent = state.leverage + "x";
+      $("levVal").textContent = state.leverage;
+      if(wheelCfg) updateWheelUI(wheelCfg, state.pct);
+      if(levWheelCfg) updateWheelUI(levWheelCfg, state.leverage);
     }
 
     // -----------------------------
-    // 可拖动"滑轮组"组件（通用）
+    // 滑轮组件
     // -----------------------------
-    function makeWheel({ rootId, marksId, thumbId, min, max, step, marks, onChange, getValue, setValue }){
+    function makeWheel({rootId, marksId, thumbId, min, max, step, marks, onChange, getValue, setValue}){
       const root = $(rootId);
       const marksEl = $(marksId);
       const thumb = $(thumbId);
 
-      // 渲染刻度
       marksEl.innerHTML = "";
-      marks.forEach(v=>{
+      marks.forEach(v => {
         const m = document.createElement("div");
         m.className = "mark";
         m.title = String(v);
-        m.addEventListener("click", ()=>{
+        m.addEventListener("click", () => {
           setValue(v);
           onChange(v);
           updateWheelUI(cfg, v);
@@ -1737,10 +1632,7 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
         marksEl.appendChild(m);
       });
 
-      // 计算 thumb 位置
-      function valueToPct(v){
-        return (v - min) / (max - min);
-      }
+      function valueToPct(v){ return (v - min) / (max - min); }
       function pctToValue(p){
         const raw = min + p * (max - min);
         const snapped = Math.round(raw / step) * step;
@@ -1748,7 +1640,6 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
       }
 
       let dragging = false;
-
       function setFromClientX(clientX){
         const rect = root.getBoundingClientRect();
         const left = rect.left + 8;
@@ -1760,175 +1651,223 @@ PREVIEW_TEMPLATE = r"""<!doctype html>
         updateWheelUI(cfg, v);
       }
 
-      const onDown = (e)=>{
+      const onDown = (e) => {
         dragging = true;
         thumb.style.cursor = "grabbing";
         const x = (e.touches && e.touches[0]) ? e.touches[0].clientX : e.clientX;
         setFromClientX(x);
       };
-      const onMove = (e)=>{
+      const onMove = (e) => {
         if (!dragging) return;
         const x = (e.touches && e.touches[0]) ? e.touches[0].clientX : e.clientX;
         setFromClientX(x);
       };
-      const onUp = ()=>{
+      const onUp = () => {
         dragging = false;
         thumb.style.cursor = "grab";
       };
 
       root.addEventListener("mousedown", onDown);
-      root.addEventListener("touchstart", onDown, { passive:false });
+      root.addEventListener("touchstart", onDown, {passive: false});
       window.addEventListener("mousemove", onMove);
-      window.addEventListener("touchmove", onMove, { passive:false });
+      window.addEventListener("touchmove", onMove, {passive: false});
       window.addEventListener("mouseup", onUp);
       window.addEventListener("touchend", onUp);
 
-      const cfg = {
-        min, max, marks,
-        root, marksEl, thumb,
-        valueToPct,
-        getValue
-      };
+      const cfg = { min, max, marks, root, marksEl, thumb, valueToPct, getValue };
       return cfg;
     }
 
     function updateWheelUI(cfg, value){
       const p = cfg.valueToPct(value);
-      const rect = cfg.root.getBoundingClientRect();
-      // thumb 使用百分比布局（不用依赖 rect 宽度）
-      cfg.thumb.style.left = `calc(${(p*100).toFixed(4)}% + 8px)`;
-
-      // marks 高亮：最近的一个
+      cfg.thumb.style.left = `calc(${(p * 100).toFixed(4)}% + 8px)`;
       const children = Array.from(cfg.marksEl.children);
       let bestIdx = 0, bestDist = Infinity;
-      cfg.marks.forEach((v, i)=>{
+      cfg.marks.forEach((v, i) => {
         const d = Math.abs(v - value);
         if (d < bestDist){ bestDist = d; bestIdx = i; }
       });
-      children.forEach((el, i)=>{
+      children.forEach((el, i) => {
         el.classList.toggle("active", i === bestIdx);
       });
     }
 
-    // 仓位比例滑轮（0-100）
     const wheelCfg = makeWheel({
-      rootId:"wheel",
-      marksId:"marks",
-      thumbId:"thumb",
-      min:0, max:100, step:1,
-      marks:[0,25,50,75,100],
-      getValue: ()=>state.pct,
-      setValue: (v)=>{ state.pct=v; $("pctText").textContent=v; },
-      onChange: (v)=>{
-        // 根据新仓位比例重新计算风控
-        calcRiskFromMT4();
+      rootId: "wheel", marksId: "marks", thumbId: "thumb",
+      min: 0, max: 100, step: 1, marks: [0, 25, 50, 75, 100],
+      getValue: () => state.pct,
+      setValue: (v) => { state.pct = v; $("pctText").textContent = v; },
+      onChange: (v) => {
+        if (v >= 90) state.risk.tipLevel = "red";
+        else if (v >= 70) state.risk.tipLevel = "yellow";
+        else state.risk.tipLevel = "green";
+        renderRisk();
       }
     });
 
-    // 杠杆滑轮（1-100，刻度示意）
     const levWheelCfg = makeWheel({
-      rootId:"levWheel",
-      marksId:"levMarks",
-      thumbId:"levThumb",
-      min:1, max:100, step:1,
-      marks:[1,20,40,60,80,100],
-      getValue: ()=>state.leverage,
-      setValue: (v)=>{ state.leverage=v; $("levVal").textContent=v; },
-      onChange: (v)=>{
-        // 根据新杠杆重新计算风控
-        calcRiskFromMT4();
+      rootId:"levWheel", marksId: "levMarks", thumbId: "levThumb",
+      min: 1, max: 100, step: 1, marks: [1, 20, 40, 60, 80, 100],
+      getValue: () => state.leverage,
+      setValue: (v) => { state.leverage = v; $("levVal").textContent = v; },
+      onChange: (v) => {
+        if (v > 50) state.risk.tipLevel = "red";
+        else if (v > 10) state.risk.tipLevel="yellow";
+        else state.risk.tipLevel="green";
+        renderRisk();
       }
     });
 
     // -----------------------------
-    // 杠杆弹窗
+    // API 交互
     // -----------------------------
-    $("btnLev").addEventListener("click", ()=>openMask("levMask"));
-    $("btnAdjLev").addEventListener("click", ()=>openMask("levMask"));
-    $("closeLev").addEventListener("click", ()=>closeMask("levMask"));
-    $("levMask").addEventListener("click", (e)=>{ if (e.target.id==="levMask") closeMask("levMask"); });
-
-    $("confirmLev").addEventListener("click", ()=>{
-      closeMask("levMask");
-      // 把杠杆写回主按钮
-      $("btnLev").textContent = state.leverage + "x";
-    });
-
-    // 下单按钮（调用后端接口）
-    $("btnBuy").addEventListener("click", async ()=>{
-      const symbol = $("tradeSymbol").value.trim().toUpperCase();
-      const lots = $("tradeLots").value.trim();
-      if(!symbol || !lots){
-        alert("请输入交易品种和数量");
-        return;
-      }
+    async function fetchMT4Data() {
       try {
-        const formData = new FormData();
-        formData.append("cmd_type", "MARKET");
-        formData.append("symbol", symbol);
-        formData.append("side", "BUY");
-        formData.append("lots", lots);
-
-        const resp = await fetch(API_BASE + "/send_command", {
-          method: "POST",
-          body: formData
-        });
-        if(resp.ok){
-          alert(`下单成功：做多 ${symbol} ${lots}手`);
-        } else {
-          alert("下单失败");
+        const resp = await fetch("/api/latest_status");
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data) {
+          // 更新 state
+          state.equity = data.equity || 0;
+          state.account.entry = data.equity || 0; // 暂用equity
+          state.account.now = data.equity || 0; 
+          state.account.dayPnl = data.daily_pnl || 0;
+          state.account.dayPnlPct = data.daily_return || 0;
+          state.account.availMargin = data.free_margin || 0;
+          
+          state.mt4.positions = data.positions || [];
+          
+          // 更新 Risk (简单模拟)
+          const exposure = data.exposure_notional || 0;
+          state.risk.long.perPoint = exposure; 
+          state.risk.long.perPct = (exposure / (state.equity||1)) * 100;
+          
+          // 重新渲染
+          renderAll();
         }
-      } catch(e){
-        alert("下单出错：" + e.message);
-      }
-    });
-
-    $("btnSell").addEventListener("click", async ()=>{
-      const symbol = $("tradeSymbol").value.trim().toUpperCase();
-      const lots = $("tradeLots").value.trim();
-      if(!symbol || !lots){
-        alert("请输入交易品种和数量");
-        return;
-      }
+      } catch(e) { console.error(e); }
+    }
+    
+    async function fetchHistory() {
       try {
-        const formData = new FormData();
-        formData.append("cmd_type", "MARKET");
-        formData.append("symbol", symbol);
-        formData.append("side", "SELL");
-        formData.append("lots", lots);
-
-        const resp = await fetch(API_BASE + "/send_command", {
-          method: "POST",
-          body: formData
-        });
-        if(resp.ok){
-          alert(`下单成功：做空 ${symbol} ${lots}手`);
-        } else {
-          alert("下单失败");
+        const resp = await fetch("/api/history_trades?limit=10");
+        if(resp.ok) {
+           const d = await resp.json();
+           state.mt4.trades = d.trades || [];
+           renderLists();
         }
-      } catch(e){
-        alert("下单出错：" + e.message);
-      }
+      } catch(e) {}
+    }
+    
+    async function sendCommand(side) {
+      const lots = $("tradeLots").value;
+      if(!lots || lots <= 0) { alert("请输入数量"); return; }
+      
+      const formData = new FormData();
+      formData.append("symbol", state.activeSym);
+      formData.append("side", side);
+      formData.append("volume", lots);
+      
+      let cmdType = "MARKET";
+      if(state.orderType.includes("限价")) cmdType = "LIMIT";
+      else if(state.orderType.includes("市价")) cmdType = "MARKET";
+      
+      formData.append("cmd_type", cmdType);
+      
+      const price = $("inpPrice") ? $("inpPrice").value : "";
+      const sl = $("inpSl") ? $("inpSl").value : "";
+      const tp = $("inpTp") ? $("inpTp").value : "";
+      
+      if(price) formData.append("price", price);
+      if(sl) formData.append("sl", sl);
+      if(tp) formData.append("tp", tp);
+      
+      try {
+        const resp = await fetch("/send_command", {method: "POST", body: formData});
+        if(resp.ok) alert("指令已发送");
+        else alert("发送失败");
+      } catch(e) { alert("错误: " + e.message); }
+    }
+
+    // -----------------------------
+    // 事件绑定
+    // -----------------------------
+    $("btnBuy").addEventListener("click", () => sendCommand("BUY"));
+    $("btnSell").addEventListener("click", () => sendCommand("SELL"));
+
+    function openMask(maskId){$(maskId).style.display="flex";}
+    function closeMask(maskId){$(maskId).style.display="none";}
+    
+    // 品种选择
+    function renderPairList(filter=""){
+      const wrap = $("pairList");
+      wrap.innerHTML = "";
+      const q = filter.trim().toUpperCase();
+      state.pairs
+        .filter(p => !q || p.sym.includes(q))
+        .forEach(p => {
+          const row = document.createElement("div");
+          row.className = "pairRow";
+          row.innerHTML = `
+            <div><strong>${p.sym}</strong> <span>永续</span></div>
+            <div style="text-align:right">
+              <strong>${fmtNum(p.last, p.last < 10?4:2)}</strong><br/>
+              <span style="color:${p.chg<0?'var(--red)':'var(--green)'}">${p.chg.toFixed(2)}%</span>
+            </div>
+          `;
+          row.addEventListener("click", () => {
+            state.activeSym = p.sym;
+            closeMask("pairMask");
+            renderAll();
+          });
+          wrap.appendChild(row);
+        });
+    }
+    $("btnPick").addEventListener("click", () => {renderPairList(""); openMask("pairMask");});
+    $("closePair").addEventListener("click", () => closeMask("pairMask"));
+    $("pairMask").addEventListener("click", (e) => { if (e.target.id ==="pairMask") closeMask("pairMask");});
+    $("pairSearch").addEventListener("input", (e) => renderPairList(e.target.value));
+    $("addPair").addEventListener("click", () => {
+        const sym = $("pairNew").value.trim().toUpperCase();
+        if(!sym) return;
+        state.pairs.unshift({sym, last: 0, chg: 0});
+        $("pairNew").value = "";
+        renderPairList($("pairSearch").value);
+    });
+    
+    // 杠杆
+    $("btnLev").addEventListener("click", () => openMask("levMask"));
+    $("closeLev").addEventListener("click", () => closeMask("levMask"));
+    $("levMask").addEventListener("click", (e) => { if (e.target.id ==="levMask") closeMask("levMask");});
+    $("confirmLev").addEventListener("click", () => { closeMask("levMask"); $("btnLev").textContent = state.leverage + "x"; });
+    
+    // 交易类型
+    $("orderTypeField").addEventListener("click", () => {
+      const idx = ORDER_TYPES.indexOf(state.orderType);
+      const next = ORDER_TYPES[(idx + 1 + ORDER_TYPES.length) % ORDER_TYPES.length];
+      state.orderType = next;
+      renderOrderType();
     });
 
-    // 初始化
+    // -----------------------------
+    // 启动
+    // -----------------------------
     renderAll();
-    // 初次布局后更新 thumb
-    requestAnimationFrame(()=>{
-      updateWheelUI(wheelCfg, state.pct);
-      updateWheelUI(levWheelCfg, state.leverage);
+    requestAnimationFrame(() => {
+      if(wheelCfg) updateWheelUI(wheelCfg, state.pct);
+      if(levWheelCfg) updateWheelUI(levWheelCfg, state.leverage);
     });
-
-    // 启动定时轮询 MT4 数据（每 3 秒刷新一次）
-    fetchMT4Data();  // 立即获取一次
-    fetchHistoryTrades();  // 获取历史成交
+    window.addEventListener("resize", () => {
+      if(wheelCfg) updateWheelUI(wheelCfg, state.pct);
+      if(levWheelCfg) updateWheelUI(levWheelCfg, state.leverage);
+    });
+    
+    // 轮询
     setInterval(fetchMT4Data, 3000);
-    setInterval(fetchHistoryTrades, 5000);  // 历史成交5秒刷新一次
-
-    window.addEventListener("resize", ()=>{
-      updateWheelUI(wheelCfg, state.pct);
-      updateWheelUI(levWheelCfg, state.leverage);
-    });
+    setInterval(fetchHistory, 5000);
+    fetchMT4Data();
+    fetchHistory();
+    
   </script>
 </body>
 </html>"""
@@ -2167,505 +2106,6 @@ def clear_commands():
     with commands_lock:
         commands.clear()
     return redirect(url_for("index"))
-
-# ==================== HTML（保留你的布局，增加一个 poll 表）====================
-HTML_TEMPLATE = r"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MT4 远程交易执行面板 · 专业版</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-  <style>
-    body { padding-top: 20px; background-color: #f0f2f5; }
-    .card-header { font-weight: 600; }
-    .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
-    .stat-item { background: #f8f9fa; border-radius: 8px; padding: 10px 12px; border-left: 4px solid #0d6efd; }
-    .stat-label { font-size: 0.8rem; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
-    .stat-value { font-size: 1.2rem; font-weight: 600; font-family: 'Courier New', monospace; }
-    .history-table td { font-size: 0.85rem; vertical-align: middle; }
-    .badge-ip { font-family: monospace; background: #e9ecef; color: #000; padding: 3px 6px; border-radius: 4px; }
-    .command-item { background: #e9ecef; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
-    .info-box { background: #d1e7ff; border-radius: 8px; padding: 12px; margin-bottom: 15px; border-left: 5px solid #0a58ca; }
-    .pause-control { background: #f8d7da; border-left: 5px solid #dc3545; }
-    .restricted-mode {
-      background-color: black !important;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      color: red;
-      font-size: 4rem;
-      font-weight: bold;
-      text-align: center;
-    }
-    .restricted-mode .status-box {
-      background: rgba(0,0,0,0.7);
-      border: 2px solid red;
-      border-radius: 10px;
-      padding: 20px;
-      margin-bottom: 20px;
-      color: white;
-      font-size: 1.5rem;
-    }
-    .restricted-mode .status-box .label { color: #aaa; font-size: 1rem; }
-    .restricted-mode .status-box .value { color: #0f0; }
-    pre { white-space: pre-wrap; word-break: break-word; }
-  </style>
-</head>
-<body>
-{% if restricted %}
-<div class="restricted-mode">
-  <div class="status-box">
-    <div class="row">
-      <div class="col">
-        <span class="label">账户</span><br>
-        <span class="value">{{ latest.account if latest else 'N/A' }}</span>
-      </div>
-      <div class="col">
-        <span class="label">余额</span><br>
-        <span class="value">{{ "%.2f"|format(latest.balance) if latest and latest.balance is number else 'N/A' }}</span>
-      </div>
-      <div class="col">
-        <span class="label">净值</span><br>
-        <span class="value">{{ "%.2f"|format(latest.equity) if latest and latest.equity is number else 'N/A' }}</span>
-      </div>
-      <div class="col">
-        <span class="label">浮动盈亏</span><br>
-        <span class="value">{{ "%.2f"|format(latest.floating_pnl) if latest and latest.floating_pnl is number else 'N/A' }}</span>
-      </div>
-    </div>
-  </div>
-  <div>为人民服务</div>
-</div>
-{% else %}
-<div class="container">
-  <h1 class="mb-3"><i class="bi bi-cpu"></i> MT4 远程交易执行 · 专业监控</h1>
-
-  <div class="info-box d-flex justify-content-between align-items-center">
-    <div>
-      <i class="bi bi-info-circle-fill me-2"></i>
-      <strong>MT4专用接口：</strong>
-      <code>/web/api/mt4/commands</code> (轮询),
-      <code>/web/api/mt4/status</code> (状态),
-      <code>/web/api/mt4/positions</code> (持仓),
-      <code>/web/api/mt4/report</code> (回报)
-      <span class="badge bg-secondary ms-2">等待指令返回</span>
-      <br><small class="text-muted">原 <code>/web/api/echo</code> 接口仍保留，用于调试</small>
-    </div>
-    <span class="text-muted small">指令将按账户过滤后返回</span>
-  </div>
-
-  <div class="card shadow-sm mb-3 pause-control">
-    <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
-      <span><i class="bi bi-pause-circle"></i> 应急暂停控制</span>
-    </div>
-    <div class="card-body">
-      <div class="d-flex align-items-center justify-content-between">
-        <span>当前状态: <strong id="pause-status" class="{% if paused %}text-danger{% else %}text-success{% endif %}">{% if paused %}已暂停{% else %}运行中{% endif %}</strong></span>
-        <div>
-          <button id="pause-btn" class="btn btn-warning btn-sm me-2" {% if paused %}disabled{% endif %}><i class="bi bi-pause"></i> 暂停</button>
-          <button id="resume-btn" class="btn btn-success btn-sm" {% if not paused %}disabled{% endif %}><i class="bi bi-play"></i> 恢复</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 最新账户状态（只来自 status） -->
-  <div class="card mb-4 shadow-sm">
-    <div class="card-header bg-primary text-white bg-gradient">
-      <i class="bi bi-graph-up-arrow"></i> 最新账户状态（完整字段）
-    </div>
-    <div class="card-body">
-      {% if latest %}
-        {% if latest.error %}
-          <div class="alert alert-warning">
-            <i class="bi bi-exclamation-triangle"></i> {{ latest.error }}
-            <br><small>原始数据预览：{{ latest.body_raw_preview }}</small>
-            {% if latest.full_error %}
-              <pre class="mt-2 bg-light p-2 rounded" style="font-size:0.75rem;">{{ latest.full_error }}</pre>
-            {% endif %}
-          </div>
-        {% else %}
-          <div class="stat-grid">
-            <div class="stat-item"><span class="stat-label">account</span><div class="stat-value">{{ latest.account or 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">server</span><div class="stat-value">{{ latest.server or 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">ts</span><div class="stat-value">{{ latest.ts or 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">balance</span><div class="stat-value">{{ "%.2f"|format(latest.balance) if latest.balance is number else (latest.balance or 'N/A') }}</div></div>
-            <div class="stat-item"><span class="stat-label">equity</span><div class="stat-value">{{ "%.2f"|format(latest.equity) if latest.equity is number else (latest.equity or 'N/A') }}</div></div>
-            <div class="stat-item"><span class="stat-label">margin</span><div class="stat-value">{{ "%.2f"|format(latest.margin) if latest.margin is number else (latest.margin or 'N/A') }}</div></div>
-            <div class="stat-item"><span class="stat-label">free_margin</span><div class="stat-value">{{ "%.2f"|format(latest.free_margin) if latest.free_margin is number else (latest.free_margin or 'N/A') }}</div></div>
-            <div class="stat-item"><span class="stat-label">margin_level</span><div class="stat-value">{{ "%.2f"|format(latest.margin_level) if latest.margin_level is number else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">floating_pnl</span><div class="stat-value">{{ "%.2f"|format(latest.floating_pnl) if latest.floating_pnl is number else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">day_start_equity</span><div class="stat-value">{{ "%.2f"|format(latest.day_start_equity) if latest.day_start_equity is number else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">daily_closed_pnl</span><div class="stat-value">{{ "%.2f"|format(latest.daily_closed_pnl) if latest.daily_closed_pnl is number else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">daily_pnl</span><div class="stat-value">{{ "%.2f"|format(latest.daily_pnl) if latest.daily_pnl is number else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">daily_return</span><div class="stat-value">{{ "%.6f"|format(latest.daily_return) if latest.daily_return is number else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">exposure_notional</span><div class="stat-value">{{ "%.2f"|format(latest.exposure_notional) if latest.exposure_notional is number else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">leverage_used</span><div class="stat-value">{{ "%.4f"|format(latest.leverage_used) if latest.leverage_used is number else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">risk_flags</span><div class="stat-value">{{ latest.risk_flags if latest.risk_flags else '' }}</div></div>
-
-            <div class="stat-item"><span class="stat-label">metrics.poll_latency_ms</span><div class="stat-value">{{ latest.poll_latency_ms if latest.poll_latency_ms is not none else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">metrics.last_http_code</span><div class="stat-value">{{ latest.last_http_code if latest.last_http_code is not none else 'N/A' }}</div></div>
-            <div class="stat-item"><span class="stat-label">metrics.last_error</span><div class="stat-value">{{ latest.last_error if latest.last_error else '' }}</div></div>
-            <div class="stat-item"><span class="stat-label">metrics.queue_batch_size</span><div class="stat-value">{{ latest.queue_batch_size }}</div></div>
-            <div class="stat-item"><span class="stat-label">metrics.reports_sent</span><div class="stat-value">{{ latest.reports_sent_count }}</div></div>
-            <div class="stat-item"><span class="stat-label">metrics.executed</span><div class="stat-value">{{ latest.executed_commands }}</div></div>
-            <div class="stat-item"><span class="stat-label">metrics.failed</span><div class="stat-value">{{ latest.failed_commands }}</div></div>
-          </div>
-        {% endif %}
-
-        <div class="mt-3">
-          <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#rawJsonPreview" aria-expanded="false">
-            <i class="bi bi-code-slash"></i> 查看原始JSON（status）
-          </button>
-          <div class="collapse mt-2" id="rawJsonPreview">
-            <pre class="bg-light p-3 rounded" style="font-size:0.75rem;">{{ latest_raw.body_raw if latest_raw else '无原始数据' }}</pre>
-          </div>
-        </div>
-      {% else %}
-        <p class="text-muted"><i class="bi bi-exclamation-circle"></i> 尚未收到任何 status 上报数据。</p>
-      {% endif %}
-    </div>
-  </div>
-
-  <!-- 持仓展示区域 -->
-  {% if latest_detail and latest_detail.positions %}
-  <div class="card shadow-sm mb-4">
-    <div class="card-header bg-primary text-white">
-      <i class="bi bi-collection"></i> 当前持仓 ( {{ latest_detail.positions|length }} )
-    </div>
-    <div class="card-body p-0">
-      <div class="table-responsive">
-        <table class="table table-striped table-hover mb-0">
-          <thead>
-            <tr>
-              <th>Ticket</th>
-              <th>品种</th>
-              <th>方向</th>
-              <th>手数</th>
-              <th>开仓价</th>
-              <th>当前价</th>
-              <th>浮动盈亏</th>
-              <th>保证金</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for pos in latest_detail.positions %}
-            <tr>
-              <td>{{ pos.ticket }}</td>
-              <td>{{ pos.symbol }}</td>
-              <td><span class="badge bg-{{ 'success' if pos.side == 'buy' else 'danger' }}">{{ pos.side }}</span></td>
-              <td>{{ "%.2f"|format(pos.lots) if pos.lots is number else pos.lots }}</td>
-              <td>{{ "%.5f"|format(pos.open_price) if pos.open_price is number else pos.open_price }}</td>
-              <td>{{ "%.5f"|format(pos.current_price) if pos.current_price is number else pos.current_price }}</td>
-              <td style="color: {{ 'green' if pos.profit > 0 else 'red' }}">{{ "%.2f"|format(pos.profit) if pos.profit is number else pos.profit }}</td>
-              <td>{{ "%.2f"|format(pos.margin) if pos.margin is number else pos.margin }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-  {% endif %}
-
-  <div class="row">
-    <!-- 左：status 历史 -->
-    <div class="col-lg-7 mb-4">
-      <div class="card shadow-sm h-100">
-        <div class="card-header bg-secondary text-white">
-          <i class="bi bi-clock-history"></i> 状态上报历史(status) ({{ history|length }}/{{ MAX_HISTORY }})
-        </div>
-        <div class="card-body p-0">
-          <div class="table-responsive">
-            <table class="table table-striped table-hover history-table mb-0">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>账户</th>
-                  <th>余额</th>
-                  <th>净值</th>
-                  <th>浮动盈亏</th>
-                  <th>IP</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for rec in history %}
-                <tr>
-                  <td>{{ rec.received_at.split(' ')[1] }}</td>
-                  <td>{{ rec.account or '-' }}</td>
-                  <td>{{ "%.2f"|format(rec.balance) if rec.balance is number else rec.balance }}</td>
-                  <td>{{ "%.2f"|format(rec.equity) if rec.equity is number else rec.equity }}</td>
-                  <td>{{ "%.2f"|format(rec.floating_pnl) if rec.floating_pnl is number else rec.floating_pnl }}</td>
-                  <td><span class="badge-ip">{{ rec.ip }}</span></td>
-                  <td>
-                    <button class="btn btn-sm btn-outline-info" type="button"
-                      data-bs-toggle="collapse" data-bs-target="#raw-{{ loop.index }}"
-                      aria-expanded="false"><i class="bi bi-eye"></i></button>
-                    <div class="collapse mt-1" id="raw-{{ loop.index }}">
-                      <div class="card card-body p-2">
-                        <small>{{ rec.body_raw }}</small>
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-                {% else %}
-                <tr><td colspan="7" class="text-center text-muted">暂无 status 历史数据</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <!-- 轮询请求(poll)历史：用来排查 max=50 刷屏 -->
-      <div class="card shadow-sm mt-3">
-        <div class="card-header bg-light">
-          <i class="bi bi-arrow-repeat"></i> 轮询请求历史(commands poll) ({{ poll_history|length }}/{{ MAX_HISTORY }})
-          <small class="text-muted ms-2">这里展示的是 EA 发来的 {"account","max"}，不会影响 status</small>
-        </div>
-        <div class="card-body p-0">
-          <div class="table-responsive">
-            <table class="table table-sm table-striped mb-0">
-              <thead>
-                <tr>
-                  <th>时间</th>
-                  <th>IP</th>
-                  <th>Body</th>
-                </tr>
-              </thead>
-              <tbody>
-                {% for rec in poll_history %}
-                <tr>
-                  <td>{{ rec.received_at.split(' ')[1] }}</td>
-                  <td><span class="badge-ip">{{ rec.ip }}</span></td>
-                  <td><small>{{ rec.body_raw }}</small></td>
-                </tr>
-                {% else %}
-                <tr><td colspan="3" class="text-center text-muted">暂无 poll 数据</td></tr>
-                {% endfor %}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- 持仓历史 -->
-    <div class="card shadow-sm mt-3">
-      <div class="card-header bg-info text-white">
-        <i class="bi bi-clock-history"></i> 持仓上报历史(positions) 
-        <small class="text-white-50 ms-2">记录来自 /web/api/mt4/positions</small>
-      </div>
-      <div class="card-body p-0">
-        {% set positions_history = history_positions[:5] %}
-        {% if positions_history %}
-          {% for rec in positions_history %}
-          <div class="border-bottom p-2">
-            <small class="text-muted">{{ rec.received_at }} ({{ rec.ip }})</small>
-            <div class="mt-1">
-              {% set positions = rec.parsed.positions if rec.parsed else [] %}
-              {% if positions %}
-                {% for pos in positions[:3] %}
-                <span class="badge bg-{{ 'success' if pos.side == 'buy' else 'danger' }} me-1">
-                  {{ pos.symbol }} {{ pos.lots }}手
-                </span>
-                {% endfor %}
-                {% if positions|length > 3 %}
-                <small class="text-muted">...等{{ positions|length }}个</small>
-                {% endif %}
-              {% else %}
-                <small class="text-muted">无持仓</small>
-              {% endif %}
-            </div>
-          </div>
-          {% endfor %}
-        {% else %}
-          <div class="p-3 text-center text-muted">暂无 positions 上报数据</div>
-        {% endif %}
-      </div>
-    </div>
-
-    <!-- 右：命令队列+发单 -->
-    <div class="col-lg-5 mb-4">
-      <div class="card shadow-sm mb-4">
-        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
-          <span><i class="bi bi-list-check"></i> 待发送指令队列 ({{ commands|length }})</span>
-          <form method="post" action="{{ url_for('clear_commands') }}" style="display:inline;">
-            <button type="submit" class="btn btn-sm btn-light" onclick="return confirm('确定清空所有指令？')">
-              <i class="bi bi-trash"></i> 清空
-            </button>
-          </form>
-        </div>
-        <div class="card-body">
-          {% if commands %}
-            {% for cmd in commands %}
-            <div class="command-item d-flex justify-content-between align-items-center">
-              <div>
-                <strong>{{ cmd.action }}</strong>
-                {% if cmd.action == 'market' %}
-                  {{ cmd.side.upper() }} {{ cmd.symbol }} {{ cmd.volume }}手
-                  {% if cmd.sl_price %} SL:{{ cmd.sl_price }}{% endif %}
-                  {% if cmd.tp_price %} TP:{{ cmd.tp_price }}{% endif %}
-                {% elif cmd.action == 'limit' %}
-                  {{ cmd.side.upper() }} {{ cmd.symbol }} {{ cmd.volume }}手 @ {{ cmd.price }}
-                  {% if cmd.sl %} SL:{{ cmd.sl }}{% endif %}
-                  {% if cmd.tp %} TP:{{ cmd.tp }}{% endif %}
-                {% elif cmd.action == 'close' %}
-                  平仓 票号:{{ cmd.ticket }}{% if cmd.lots %} 手数:{{ cmd.lots }}{% endif %}
-                {% endif %}
-                <br><small class="text-muted"><i class="bi bi-clock"></i>
-                  账户: {{ cmd.account if cmd.account else '广播' }} | ID: {{ cmd.id }}
-                </small>
-              </div>
-              <form method="post" action="{{ url_for('delete_command', index=loop.index0) }}" style="margin:0;">
-                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('删除该指令？')">
-                  <i class="bi bi-x"></i>
-                </button>
-              </form>
-            </div>
-            {% endfor %}
-          {% else %}
-            <p class="text-muted mb-0"><i class="bi bi-inbox"></i> 队列为空，暂无待发指令。</p>
-          {% endif %}
-        </div>
-      </div>
-
-      <div class="card shadow-sm">
-        <div class="card-header bg-warning">
-          <i class="bi bi-pencil-square"></i> 下达新交易指令
-        </div>
-        <div class="card-body">
-          <form method="post" action="{{ url_for('send_command') }}" id="commandForm">
-            <div class="mb-2">
-              <label class="form-label">账户 <span class="text-muted">(可选)</span></label>
-              <input type="text" name="account" class="form-control form-control-sm" placeholder="833711" id="accountInput">
-            </div>
-            <div class="mb-2">
-              <label class="form-label">指令类型</label>
-              <select name="cmd_type" class="form-select form-select-sm" id="cmdTypeSelect" required>
-                <option value="MARKET" selected>市价单 (MARKET)</option>
-                <option value="LIMIT">限价单 (LIMIT)</option>
-                <option value="CLOSE">平仓 (CLOSE)</option>
-              </select>
-            </div>
-
-            <div id="tradeFields">
-              <div class="mb-2">
-                <label class="form-label">品种</label>
-                <input type="text" name="symbol" class="form-control form-control-sm" placeholder="EURUSD">
-              </div>
-              <div class="mb-2">
-                <label class="form-label">方向</label>
-                <select name="side" class="form-select form-select-sm">
-                  <option value="BUY">买入 (BUY)</option>
-                  <option value="SELL">卖出 (SELL)</option>
-                </select>
-              </div>
-              <div class="mb-2">
-                <label class="form-label">手数</label>
-                <input type="number" step="0.01" min="0.01" name="volume" class="form-control form-control-sm" value="0.1">
-              </div>
-              <div class="row">
-                <div class="col mb-2">
-                  <label class="form-label">止损 (SL)</label>
-                  <input type="number" step="0.00001" name="sl" class="form-control form-control-sm" placeholder="可选">
-                </div>
-                <div class="col mb-2">
-                  <label class="form-label">止盈 (TP)</label>
-                  <input type="number" step="0.00001" name="tp" class="form-control form-control-sm" placeholder="可选">
-                </div>
-              </div>
-            </div>
-
-            <div id="limitFields" style="display:none;">
-              <div class="mb-2">
-                <label class="form-label">限价价格</label>
-                <input type="number" step="0.00001" name="price" class="form-control form-control-sm" placeholder="如 1.1050">
-              </div>
-            </div>
-
-            <div id="closeFields" style="display:none;">
-              <div class="mb-2">
-                <label class="form-label">订单号 (ticket)</label>
-                <input type="number" name="ticket" class="form-control form-control-sm" placeholder="如 12345678">
-              </div>
-              <div class="mb-2">
-                <label class="form-label">手数 (可选)</label>
-                <input type="number" step="0.01" min="0.01" name="lots" class="form-control form-control-sm" placeholder="可选">
-              </div>
-            </div>
-
-            <button type="submit" class="btn btn-primary w-100 mt-2"><i class="bi bi-send"></i> 加入指令队列</button>
-          </form>
-        </div>
-      </div>
-    </div>
-  </div>
-
-</div>
-{% endif %}
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-  document.addEventListener('DOMContentLoaded', function() {
-    const savedAccount = localStorage.getItem('mt4_default_account');
-    if (savedAccount) document.getElementById('accountInput').value = savedAccount;
-  });
-
-  document.getElementById('commandForm')?.addEventListener('submit', function() {
-    const v = document.getElementById('accountInput').value;
-    if (v) localStorage.setItem('mt4_default_account', v);
-  });
-
-  function updatePauseStatus() {
-    fetch('/api/status')
-      .then(r => r.json())
-      .then(data => {
-        const statusEl = document.getElementById('pause-status');
-        const pauseBtn = document.getElementById('pause-btn');
-        const resumeBtn = document.getElementById('resume-btn');
-        if (data.paused) {
-          statusEl.innerText = '已暂停';
-          statusEl.className = 'text-danger';
-          pauseBtn.disabled = true;
-          resumeBtn.disabled = false;
-        } else {
-          statusEl.innerText = '运行中';
-          statusEl.className = 'text-success';
-          pauseBtn.disabled = false;
-          resumeBtn.disabled = true;
-        }
-      });
-  }
-  document.getElementById('pause-btn')?.addEventListener('click', () => fetch('/api/pause',{method:'POST'}).then(()=>updatePauseStatus()));
-  document.getElementById('resume-btn')?.addEventListener('click', () => fetch('/api/resume',{method:'POST'}).then(()=>updatePauseStatus()));
-  setInterval(updatePauseStatus, 5000);
-  updatePauseStatus();
-
-  const cmdTypeSelect = document.getElementById('cmdTypeSelect');
-  const tradeFields = document.getElementById('tradeFields');
-  const limitFields = document.getElementById('limitFields');
-  const closeFields = document.getElementById('closeFields');
-
-  function toggleFields() {
-    const type = cmdTypeSelect.value;
-    tradeFields.style.display = (type === 'MARKET' || type === 'LIMIT') ? 'block' : 'none';
-    limitFields.style.display = (type === 'LIMIT') ? 'block' : 'none';
-    closeFields.style.display = (type === 'CLOSE') ? 'block' : 'none';
-  }
-  cmdTypeSelect.addEventListener('change', toggleFields);
-  toggleFields();
-</script>
-</body>
-</html>
-"""
 
 # ==================== 启动 ====================
 if __name__ == "__main__":
