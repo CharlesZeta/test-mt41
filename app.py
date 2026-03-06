@@ -543,6 +543,8 @@ def api_status():
 # 网页端获取最新 MT4 状态数据（用于风控计算）
 @app.route("/api/latest_status", methods=["GET"])
 def api_latest_status():
+    symbol_filter = request.args.get("symbol", "").upper()
+    
     with history_lock:
         latest_status_record = history_status[0] if history_status else None
         latest_positions_record = history_positions[0] if history_positions else None
@@ -551,7 +553,17 @@ def api_latest_status():
         latest_quote = None
         for record in history_report:
             parsed = record.get("parsed")
+            # 兼容新旧逻辑：检查 parsed["symbol"] 或 message 内的 symbol
+            # 优先匹配 symbol 参数
             if parsed and parsed.get("desc") == "QUOTE_DATA":
+                record_symbol = parsed.get("symbol", "")
+                
+                # 如果没有 symbol 字段，尝试从 message 解析（旧版 EA 可能没传 symbol）
+                # 但如果是新版 EA，PostMarketSnapshot 应该已经传了 symbol
+                
+                if symbol_filter and record_symbol and record_symbol != symbol_filter:
+                    continue # 符号不匹配，跳过
+                
                 try:
                     msg = parsed.get("message", "{}")
                     quote_data = json.loads(msg)
@@ -560,9 +572,10 @@ def api_latest_status():
                             "bid": quote_data.get("bid"),
                             "ask": quote_data.get("ask"),
                             "spread": parsed.get("spread"),
-                            "ts": parsed.get("ts")
+                            "ts": parsed.get("ts"),
+                            "symbol": record_symbol
                         }
-                        break
+                        break # 找到最新的就 break
                 except:
                     continue
 
@@ -1670,7 +1683,10 @@ HTML_TEMPLATE = r"""<!doctype html>
         const startTime = performance.now();
         
         try {
-            const res = await fetch('/api/latest_status');
+            // 获取当前选中的品种
+            const currentSym = $('symName').innerText;
+            // 修复：添加 symbol 参数，确保后端只返回该品种的最新报价
+            const res = await fetch(`/api/latest_status?symbol=${currentSym}`);
             
             if(!res.ok) throw new Error(`HTTP ${res.status}`);
             
@@ -1716,29 +1732,32 @@ HTML_TEMPLATE = r"""<!doctype html>
                 // 优先使用最新的 QUOTE_DATA
                 if(data.latest_quote) {
                     const quote = data.latest_quote;
-                    window.quantState.price = quote.bid;
-                    const currentSym = $('symName').innerText;
-                    $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
-                    priceUpdated = true;
-                    
-                    // 更新信号灯时间戳 (1.5s 阈值)
-                    const nowTs = Math.floor(Date.now() / 1000);
-                    const diff = nowTs - quote.ts;
-                    const dot = $('latencySignal');
-                    if(dot) {
-                        if(diff <= 1.5) { // 用户要求 1.5s
-                            dot.className = 'signal-dot green'; dot.title = '实时 (<1.5s)';
-                        } else if(diff <= 10) {
-                            dot.className = 'signal-dot yellow'; dot.title = '延迟 (1.5-10s)';
-                        } else {
-                            dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
+                    // 再次确认 symbol 是否匹配（双重保障）
+                    if (quote.symbol && quote.symbol !== currentSym) {
+                        console.warn(`[Warn] Received quote for ${quote.symbol} but expected ${currentSym}`);
+                    } else {
+                        window.quantState.price = quote.bid;
+                        $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
+                        priceUpdated = true;
+                        
+                        // 更新信号灯时间戳 (1.5s 阈值)
+                        const nowTs = Math.floor(Date.now() / 1000);
+                        const diff = nowTs - quote.ts;
+                        const dot = $('latencySignal');
+                        if(dot) {
+                            if(diff <= 1.5) { // 用户要求 1.5s
+                                dot.className = 'signal-dot green'; dot.title = '实时 (<1.5s)';
+                            } else if(diff <= 10) {
+                                dot.className = 'signal-dot yellow'; dot.title = '延迟 (1.5-10s)';
+                            } else {
+                                dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
+                            }
                         }
                     }
                 }
 
                 if(!priceUpdated && data.positions && data.positions.length > 0) {
                     // 如果当前选中的 symbol 在持仓中，使用其 current_price
-                    const currentSym = $('symName').innerText;
                     const pos = data.positions.find(p => p.symbol === currentSym);
                     if(pos) {
                         window.quantState.price = pos.current_price;
@@ -2142,10 +2161,11 @@ def receive_tick():
                 "body_raw": json.dumps(tick),
                 "parsed": {
                     "desc": "QUOTE_DATA",
-                    "spread": tick.get('spread', 0), # 假设 EA 没传 spread 就算了
-                    "ts": tick_time, # 使用 EA 的 tick_time
+                    "spread": tick.get('spread', 0), 
+                    "ts": tick_time, 
                     "message": quote_msg,
-                    "account": "tick_stream" # 标识来源
+                    "symbol": symbol, # 显式存储 symbol
+                    "account": "tick_stream" 
                 }
             }
             
@@ -2221,6 +2241,9 @@ def send_command():
                     print(f"[RISK] 资金不足预警: Free={free_margin}, EstReq={est_margin}")
                     # return jsonify({"success": False, "message": "资金不足 (预估)"}), 400
                     # 暂时仅打印日志，不硬拦截，以免误杀
+    elif cmd_type == "QUOTE":
+        # 放行 quote 请求，即使 volume=0
+        pass
     elif cmd_type == "CLOSE":
         if not ticket:
             print("[BLOCK] ticket 为空")
