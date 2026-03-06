@@ -1674,29 +1674,16 @@ HTML_TEMPLATE = r"""<!doctype html>
                 
                 // 尝试从持仓或历史数据更新当前价格（如果有）
                 let priceUpdated = false;
+                
+                // 优先使用最新的 QUOTE_DATA
                 if(data.latest_quote) {
-                    // 优先使用最新的 QUOTE_DATA
                     const quote = data.latest_quote;
-                    // 只有当最新报价属于当前选中的品种时才更新
-                    // 注意：这里没有严格校验 symbol，因为 QUOTE_DATA 里没有直接带 symbol 字段 (在 message 里可能有，或者我们可以假设最近的 QUOTE_DATA 就是当前品种的)
-                    // 为了更严谨，前端发送 quote 请求时，最好带上 symbol，后端返回时带上 symbol。
-                    // 目前 EA ExecuteQuote 打印了 symbol，但 SendReport 没带 symbol 字段。
-                    // 无论如何，如果用户一直在轮询当前品种，最新的 QUOTE_DATA 大概率就是当前品种的。
-                    // 我们可以简单判断一下，或者信任最新的 quote。
-                    // 考虑到多用户或多品种切换，最好 EA 能回传 symbol。
-                    // 既然 EA 代码 ExecuteQuote 里有 symbol，但 SendReport 没传。
-                    // 我们可以修改 EA，或者暂且信任。
-                    
-                    // 修正：我们假设最新的一条 QUOTE_DATA 就是我们刚刚请求的。
-                    // 前端每秒轮询，EA 响应也很快。
-                    
                     window.quantState.price = quote.bid;
                     const currentSym = $('symName').innerText;
                     $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
                     priceUpdated = true;
                     
                     // 更新信号灯时间戳
-                    // 如果有 latest_quote，使用它的 ts 来判断延迟
                     const nowTs = Math.floor(Date.now() / 1000);
                     const diff = nowTs - quote.ts;
                     const dot = $('latencySignal');
