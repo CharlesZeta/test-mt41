@@ -1833,10 +1833,27 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('calcNotional').innerText = notionalVal.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       
       // 显示每点波动价值 (Total Point Value)
-      // 用户要求：基于合约手数杠杆*手数对每点波动
-      // Point Value (USD) = PointValue(Base) * Rate * Lots
-      // 实际上 pointVal 已经是 单手每点价值(USD)，直接乘以 lots 即可
-      const totalPointVal = pointVal * calculatedLots;
+      // 用户要求：基于合约手数杠杆*手数对每点波动 (数值非百分比)
+      // 实际上后端返回的 pointVal (margin_per_lot_usd/leverage/...) 并不一定是 "每点价值"
+      // 正确的每点价值 (Value per Point) = ContractSize * PointSize * (QuoteRate if needed)
+      // 而 Total Point Value = Lots * ContractSize * PointSize * (QuoteRate)
+      // 后端 rule.point_val_usd 通常是 "单手每点价值" (ContractSize * PointSize)
+      // 如果后端 point_val_usd 不准，我们自己算:
+      
+      let pointSize = 0.01; 
+      if (rule.spec && rule.spec.type === 'forex') pointSize = 0.00001;
+      if (rule.spec && rule.spec.type === 'index') pointSize = 1.0;
+      if (rule.spec && rule.spec.type === 'crypto') pointSize = 0.01;
+      // 贵金属 XAUUSD point=0.01
+      
+      // 重新计算单手每点价值 (USD)
+      // 对于 USD 结尾的品种，Rate=1
+      // ValuePerPoint = ContractSize * PointSize
+      const valuePerPoint = contractSize * pointSize;
+      
+      // 总波动价值 = ValuePerPoint * Lots
+      const totalPointVal = valuePerPoint * calculatedLots;
+      
       $('calcPpVal').innerText = totalPointVal.toFixed(2) + " USD";
       
       // 止损估算 (基于开仓名义价值)
@@ -1870,33 +1887,22 @@ HTML_TEMPLATE = r"""<!doctype html>
       // 我们可以显示：账户净值能扛多少点
       
       let liqPrice = 0;
-      if (totalPointVal > 0 && equity > 0) {
-          // 可抗点数 = 净值 / 每点总价值
-          const pointsToLiq = equity / totalPointVal; 
-          // 这里的 pointVal 是 USD value per point, 所以 pointsToLiq 是 point 的数量 (如 1000 points)
-          // 转换为价格变动 = pointsToLiq * PointSize (如 0.01 或 0.00001)
-          
-          // 获取 PointSize (从 rule 或默认)
-          // 后端没有直接传 PointSize，但我们可以推断
-          // 或者简单地：PointValue = ContractSize * PointSize * Rate
-          // 所以 PointSize = PointValue / (ContractSize * Rate)
-          // 前端已知: pointVal (单手每点价值 USD), contractSize, rate (未知，但可以近似 1 或反推)
-          
-          // 既然用户强调 "数值非百分比"，我们直接显示 "距离强平点数" 可能更直观，
-          // 但标签是 "预估强平价格"，所以还是得算出价格。
-          
-          // 假设 pointSize: XAU=0.01, Forex=0.00001
-          let pointSize = 0.01; 
-          if (rule.spec && rule.spec.type === 'forex') pointSize = 0.00001;
-          if (rule.spec && rule.spec.type === 'index') pointSize = 1.0;
-          if (rule.spec && rule.spec.type === 'crypto') pointSize = 0.01;
-          
-          const priceDist = pointsToLiq * pointSize;
-          
-          // 这里不做方向判断 (因为还没下单)，只显示距离
-          // 或者显示 Long 的强平价
-          liqPrice = Math.max(0, price - priceDist);
-      }
+       if (totalPointVal > 0 && equity > 0) {
+           // 可抗点数 = 净值 / 每点总价值
+           // 注意：这里的 totalPointVal 是每变动 1 Point 的价值
+           // 比如 XAUUSD, Point=0.01
+           // 如果 totalPointVal = 10 USD (即 1手), 净值 1000 USD
+           // 可抗点数 = 1000 / 10 = 100 Points
+           // 价格距离 = 100 * 0.01 = 1.0 USD
+           
+           const pointsToLiq = equity / totalPointVal; 
+           const priceDist = pointsToLiq * pointSize;
+           
+           // 假设做多，强平价 = 当前价 - 距离
+           // 假设做空，强平价 = 当前价 + 距离
+           // 这里默认显示做多的强平价 (更直观)
+           liqPrice = Math.max(0, window.quantState.price - priceDist);
+       }
       
       // 用户提到 "预估强平价格基于...计算"，可能只是想确认计算逻辑正确
       // 既然前端不知道方向，显示具体价格会误导 (做多做空不一样)
@@ -2482,17 +2488,31 @@ HTML_TEMPLATE = r"""<!doctype html>
             return;
         }
         
+        // 获取锁定列表
+        const lockedList = window.quantState.lockedTickets || [];
+        
         let html = '';
         positions.forEach(pos => {
             const sideClass = (pos.side && pos.side.toLowerCase() === 'buy') ? 'buy' : 'sell';
             const profitColor = pos.profit >= 0 ? 'var(--green)' : 'var(--red)';
             const profitSign = pos.profit >= 0 ? '+' : '';
             
+            // 检查是否被锁定
+            const isLocked = lockedList.includes(String(pos.ticket));
+            // 锁定状态下：背景变灰，透明度降低
+            const cardStyle = isLocked ? 'background:#f0f0f0; opacity:0.8;' : '';
+            // 锁定状态下：标题增加锁图标
+            const lockIcon = isLocked ? '<span style="margin-left:0.5rem">🔒</span>' : '';
+            // 锁定状态下：修改按钮完全禁用
+            const btnDisabled = isLocked ? 'disabled style="cursor:not-allowed; opacity:0.5;"' : '';
+            // 锁定状态下：平仓按钮完全禁用
+            const btnCloseDisabled = isLocked ? 'disabled style="cursor:not-allowed; opacity:0.5; color:var(--muted); border-color:var(--line);"' : 'style="color: var(--red); border-color: rgba(246,70,93,0.3);"';
+            
             html += `
-            <div class="posItem">
+            <div class="posItem" style="${cardStyle}">
               <div class="posTop">
                 <div>
-                  <div class="posTitle"><span class="sideTag ${sideClass}">${pos.side}</span> ${pos.symbol} <span class="symBadge" style="background:var(--chip); color:var(--text)">${pos.lots}手</span></div>
+                  <div class="posTitle"><span class="sideTag ${sideClass}">${pos.side}</span> ${pos.symbol} <span class="symBadge" style="background:var(--chip); color:var(--text)">${pos.lots}手</span>${lockIcon}</div>
                   <div class="mini" style="margin-top: 0.5rem;">浮动盈亏</div>
                   <div style="font-size: 1.5rem; font-weight: 800; color: ${profitColor};">${profitSign}${fmtNum(pos.profit, 2)}</div>
                 </div>
@@ -2510,8 +2530,8 @@ HTML_TEMPLATE = r"""<!doctype html>
                 <div><div class="mini">占用保证金</div><div class="big">${fmtNum(pos.margin, 2)}</div></div>
               </div>
               <div class="posActions">
-                <button class="ghost" onclick="openModifyOrderPanel('${pos.ticket}', ${pos.lots})">修改订单</button>
-                <button class="ghost" style="color: var(--red); border-color: rgba(246,70,93,0.3);" onclick="window.API.submitOrder('${pos.symbol}', 'CLOSE', 'market', 0, 0, ${pos.lots}, {ticket: '${pos.ticket}'})">一键平仓</button>
+                <button class="ghost" ${btnDisabled} onclick="openModifyOrderPanel('${pos.ticket}', ${pos.lots})">修改订单</button>
+                <button class="ghost" ${btnCloseDisabled} onclick="window.API.submitOrder('${pos.symbol}', 'CLOSE', 'market', 0, 0, ${pos.lots}, {ticket: '${pos.ticket}'})">一键平仓</button>
               </div>
             </div>`;
         });
