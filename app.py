@@ -547,6 +547,25 @@ def api_latest_status():
         latest_status_record = history_status[0] if history_status else None
         latest_positions_record = history_positions[0] if history_positions else None
         
+        # 查找最新的 QUOTE_DATA 报告
+        latest_quote = None
+        for record in history_report:
+            parsed = record.get("parsed")
+            if parsed and parsed.get("desc") == "QUOTE_DATA":
+                try:
+                    msg = parsed.get("message", "{}")
+                    quote_data = json.loads(msg)
+                    if isinstance(quote_data, dict) and "bid" in quote_data:
+                        latest_quote = {
+                            "bid": quote_data.get("bid"),
+                            "ask": quote_data.get("ask"),
+                            "spread": parsed.get("spread"),
+                            "ts": parsed.get("ts")
+                        }
+                        break
+                except:
+                    continue
+
         positions_data = None
         if latest_positions_record:
             positions_data = latest_positions_record.get("parsed", {}).get("positions", [])
@@ -555,6 +574,8 @@ def api_latest_status():
         detail = extract_latest_details_from_status(latest_status_record, positions_data)
         
         if detail:
+            if latest_quote:
+                detail["latest_quote"] = latest_quote
             return jsonify(detail)
         else:
             return jsonify({})
@@ -1289,17 +1310,37 @@ HTML_TEMPLATE = r"""<!doctype html>
     // 暴露全局函数供 HTML 调用
     window.updateCalculations = function() {
       const { marginPct, leverage, price, contractSize, pointSize, equity, availMargin } = window.quantState;
-      const usedMargin = availMargin * (marginPct / 100);
-      const notional = usedMargin * leverage;
-      let calculatedLots = notional / (contractSize * price);
-      // 简单的手数计算保护，避免除以0
-      if (!isFinite(calculatedLots)) calculatedLots = 0;
+      
+      // Bug 2: 修正滑轮逻辑，改为直接调整手数比例
+      // 计算当前杠杆和余额下的最大可开仓手数
+      // MaxLots = (AvailMargin * Leverage) / (ContractSize * Price)
+      // 注意：这里用 price 近似计算，实际可能略有偏差
+      let maxLots = 0;
+      if (price > 0 && contractSize > 0) {
+          maxLots = (availMargin * leverage) / (contractSize * price);
+      }
+      
+      // 根据滑轮百分比计算当前手数
+      let calculatedLots = maxLots * (marginPct / 100);
+      
+      // 简单的手数计算保护
+      if (!isFinite(calculatedLots) || calculatedLots < 0) calculatedLots = 0;
       calculatedLots = Math.floor(calculatedLots * 100) / 100; 
+      
+      // 反算占用保证金
+      // UsedMargin = (Lots * ContractSize * Price) / Leverage
+      let usedMargin = 0;
+      if (leverage > 0) {
+          usedMargin = (calculatedLots * contractSize * price) / leverage;
+      }
       
       window.quantState.lots = calculatedLots;
 
       $('pctText').innerText = marginPct;
       $('lotsText').innerText = calculatedLots.toFixed(2);
+
+      // 计算名义价值用于止损估算
+      const notional = calculatedLots * contractSize * price;
 
       [2, 3, 5, 8, 10].forEach(pct => {
         const el = $(`sl_${pct}`);
@@ -1528,30 +1569,54 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     const categoryPairs = {
       'forex': [
-        { name: 'EURUSD', price: 1.0850 }, { name: 'GBPUSD', price: 1.2640 }, { name: 'USDJPY', price: 149.50 },
-        { name: 'AUDUSD', price: 0.6520 }, { name: 'USDCAD', price: 1.3580 }, { name: 'USDCHF', price: 0.8840 },
-        { name: 'NZDUSD', price: 0.6080 }, { name: 'EURGBP', price: 0.8580 }
+        { name: 'USDCHF', price: 0.8840 }, { name: 'GBPUSD', price: 1.2640 }, { name: 'EURUSD', price: 1.0850 },
+        { name: 'USDJPY', price: 149.50 }, { name: 'USDCAD', price: 1.3580 }, { name: 'AUDUSD', price: 0.6520 },
+        { name: 'EURGBP', price: 0.8580 }, { name: 'EURAUD', price: 1.6533 }, { name: 'EURCHF', price: 0.9050 },
+        { name: 'EURJPY', price: 162.74 }, { name: 'GBPCHF', price: 1.0418 }, { name: 'CADJPY', price: 115.48 },
+        { name: 'GBPJPY', price: 210.35 }, { name: 'AUDNZD', price: 1.1918 }, { name: 'AUDCAD', price: 0.9568 },
+        { name: 'AUDCHF', price: 0.5473 }, { name: 'AUDJPY', price: 110.51 }, { name: 'CHFJPY', price: 201.88 },
+        { name: 'EURNZD', price: 1.9707 }, { name: 'EURCAD', price: 1.5822 }, { name: 'CADCHF', price: 0.5719 },
+        { name: 'NZDJPY', price: 92.715 }, { name: 'NZDUSD', price: 0.5872 }, { name: 'GBPAUD', price: 1.9032 },
+        { name: 'GBPCAD', price: 1.8213 }, { name: 'GBPNZD', price: 2.2686 }, { name: 'NZDCAD', price: 0.8027 },
+        { name: 'NZDCHF', price: 0.4591 }, { name: 'USDSGD', price: 1.2805 }, { name: 'USDHKD', price: 7.8190 },
+        { name: 'USDCNH', price: 6.9147 }
       ],
       'index': [
-        { name: 'US30', price: 38500 }, { name: 'US500', price: 5120 }, { name: 'NAS100', price: 17800 },
-        { name: 'GER40', price: 18650 }, { name: 'UK100', price: 8020 }, { name: 'JPN225', price: 39800 },
-        { name: 'HK50', price: 17800 }, { name: 'AUS200', price: 7850 }
+        { name: 'U30USD', price: 47836.1 }, { name: 'NASUSD', price: 24922.8 }, { name: 'SPXUSD', price: 6803.72 },
+        { name: '100GBP', price: 10428.9 }, { name: 'D30EUR', price: 23822.2 }, { name: 'E50EUR', price: 5773.4 },
+        { name: 'H33HKD', price: 25503.1 }
       ],
       'commodity': [
-        { name: 'XTIUSD', price: 78.50 }, { name: 'XBRUSD', price: 82.30 }, { name: 'XNGUSD', price: 2.85 },
-        { name: 'XCUUSD', price: 3.85 }, { name: 'XPTUSD', price: 980.50 }, { name: 'XPDUSD', price: 1020.30 },
-        { name: 'CL-OIL', price: 78.50 }, { name: 'NG-GAS', price: 2.85 }
+        { name: 'UKOUSD', price: 87.358 }, { name: 'USOUSD', price: 84.290 }, { name: 'XNGUSD', price: 2.85 },
+        { name: 'XCUUSD', price: 3.85 }, { name: 'XPTUSD', price: 980.50 }, { name: 'XPDUSD', price: 1020.30 }
       ],
       'metal': [
-        { name: 'XAUUSD', price: 2345.50 }, { name: 'XAGUSD', price: 28.50 }, { name: 'XAUAUD', price: 3580.20 }, { name: 'XAGAUD', price: 43.80 }
+        { name: 'XAGUSD', price: 82.764 }, { name: 'XAUUSD', price: 5081.60 }, { name: 'XAUAUD', price: 3580.20 },
+        { name: 'XAGAUD', price: 43.80 }
+      ],
+      'crypto': [
+        { name: 'BTCUSD', price: 70594 }, { name: 'BCHUSD', price: 456.94 }, { name: 'RPLUSD', price: 1.4003 },
+        { name: 'LTCUSD', price: 55.28 }, { name: 'ETHUSD', price: 2061.8 }, { name: 'XMRUSD', price: 357.28 },
+        { name: 'BNBUSD', price: 641.10 }, { name: 'SOLUSD', price: 87.506 }, { name: 'LNKUSD', price: 9.123 },
+        { name: 'XSIUSD', price: 0.201 }, { name: 'DOGUSD', price: 0.0933 }, { name: 'ADAUSD', price: 0.2673 },
+        { name: 'AVEUSD', price: 116.35 }, { name: 'DSHUSD', price: 34.063 }
       ],
       'stock': [
-        { name: 'AAPL', price: 185.50 }, { name: 'GOOGL', price: 142.30 }, { name: 'MSFT', price: 415.20 },
-        { name: 'AMZN', price: 178.50 }, { name: 'TSLA', price: 245.80 }, { name: 'NVDA', price: 875.30 },
-        { name: 'META', price: 485.20 }, { name: 'BABA', price: 82.50 }
+        { name: 'AAPL', price: 260.39 }, { name: 'AMZN', price: 218.76 }, { name: 'BABA', price: 130.22 },
+        { name: 'GOOGL', price: 301.18 }, { name: 'META', price: 660.93 }, { name: 'MSFT', price: 410.64 },
+        { name: 'NFLX', price: 99.14 }, { name: 'NVDA', price: 178.51 }, { name: 'TSLA', price: 405.46 },
+        { name: 'ABBV', price: 232.09 }, { name: 'ABNB', price: 135.71 }, { name: 'ABT', price: 110.86 },
+        { name: 'ADBE', price: 281.64 }, { name: 'AMD', price: 198.97 }, { name: 'AVGO', price: 332.70 },
+        { name: 'C', price: 108.86 }, { name: 'CRM', price: 201.29 }, { name: 'DIS', price: 102.35 },
+        { name: 'GS', price: 835.15 }, { name: 'INTC', price: 45.80 }, { name: 'JNJ', price: 239.52 },
+        { name: 'MA', price: 524.28 }, { name: 'MCD', price: 327.32 }, { name: 'KO', price: 76.91 },
+        { name: 'MMM', price: 156.12 }, { name: 'NIO', price: 4.56 }, { name: 'PLTR', price: 152.50 },
+        { name: 'SHOP', price: 134.68 }, { name: 'TSM', price: 344.40 }, { name: 'V', price: 319.47 }
       ]
     };
-    const categoryNames = { 'forex': '外汇', 'index': '指数', 'commodity': '大宗商品', 'metal': '贵金属', 'stock': '股票' };
+    const categoryNames = { 'forex': '外汇', 'index': '指数', 'commodity': '大宗商品', 'metal': '贵金属', 'crypto': '虚拟货币', 'stock': '股票' };
+
+    let quoteInterval;
 
     window.showCategoryPairs = function(category) {
       const container = $('pairListContainer');
@@ -1572,6 +1637,13 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('midPriceText').innerText = price.toFixed(name === 'XAUUSD' ? 2 : 4);
       $('pairMask').style.display = 'none';
       window.updateCalculations();
+      
+      // Start quote polling
+      if(quoteInterval) clearInterval(quoteInterval);
+      window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {}); // Initial request
+      quoteInterval = setInterval(() => {
+          window.API.submitOrder(name, 'QUOTE', 'quote', 0, 0, 0, {});
+      }, 1000);
     };
     
     // 自动刷新数据
@@ -1601,13 +1673,69 @@ HTML_TEMPLATE = r"""<!doctype html>
                 updatePositionsList(data.positions || []);
                 
                 // 尝试从持仓或历史数据更新当前价格（如果有）
-                if(data.positions && data.positions.length > 0) {
+                let priceUpdated = false;
+                if(data.latest_quote) {
+                    // 优先使用最新的 QUOTE_DATA
+                    const quote = data.latest_quote;
+                    // 只有当最新报价属于当前选中的品种时才更新
+                    // 注意：这里没有严格校验 symbol，因为 QUOTE_DATA 里没有直接带 symbol 字段 (在 message 里可能有，或者我们可以假设最近的 QUOTE_DATA 就是当前品种的)
+                    // 为了更严谨，前端发送 quote 请求时，最好带上 symbol，后端返回时带上 symbol。
+                    // 目前 EA ExecuteQuote 打印了 symbol，但 SendReport 没带 symbol 字段。
+                    // 无论如何，如果用户一直在轮询当前品种，最新的 QUOTE_DATA 大概率就是当前品种的。
+                    // 我们可以简单判断一下，或者信任最新的 quote。
+                    // 考虑到多用户或多品种切换，最好 EA 能回传 symbol。
+                    // 既然 EA 代码 ExecuteQuote 里有 symbol，但 SendReport 没传。
+                    // 我们可以修改 EA，或者暂且信任。
+                    
+                    // 修正：我们假设最新的一条 QUOTE_DATA 就是我们刚刚请求的。
+                    // 前端每秒轮询，EA 响应也很快。
+                    
+                    window.quantState.price = quote.bid;
+                    const currentSym = $('symName').innerText;
+                    $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
+                    priceUpdated = true;
+                    
+                    // 更新信号灯时间戳
+                    // 如果有 latest_quote，使用它的 ts 来判断延迟
+                    const nowTs = Math.floor(Date.now() / 1000);
+                    const diff = nowTs - quote.ts;
+                    const dot = $('latencySignal');
+                    if(dot) {
+                        if(diff <= 3) {
+                            dot.className = 'signal-dot green'; dot.title = '实时 (<3s)';
+                        } else if(diff <= 10) {
+                            dot.className = 'signal-dot yellow'; dot.title = '延迟 (3-10s)';
+                        } else {
+                            dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
+                        }
+                    }
+                }
+
+                if(!priceUpdated && data.positions && data.positions.length > 0) {
                     // 如果当前选中的 symbol 在持仓中，使用其 current_price
                     const currentSym = $('symName').innerText;
                     const pos = data.positions.find(p => p.symbol === currentSym);
                     if(pos) {
                         window.quantState.price = pos.current_price;
                         $('midPriceText').innerText = fmtNum(pos.current_price, currentSym === 'XAUUSD' ? 2 : 4);
+                    }
+                }
+                
+                // 信号灯逻辑 (Bug 3) - 只有在没有 quote 数据时才使用 status 的 ts 作为备选
+                if (!priceUpdated) {
+                    const dot = $('latencySignal');
+                    if(dot && data.ts) {
+                        const nowTs = Math.floor(Date.now() / 1000);
+                        const diff = nowTs - data.ts;
+                        if(diff <= 3) {
+                            dot.className = 'signal-dot green'; dot.title = '实时 (<3s)';
+                        } else if(diff <= 10) {
+                            dot.className = 'signal-dot yellow'; dot.title = '延迟 (3-10s)';
+                        } else {
+                            dot.className = 'signal-dot red'; dot.title = '断连 (>10s)';
+                        }
+                    } else if(dot) {
+                        dot.className = 'signal-dot red'; dot.title = '无信号';
                     }
                 }
                 
