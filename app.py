@@ -1745,12 +1745,10 @@ HTML_TEMPLATE = r"""<!doctype html>
         { name: 'H33HKD', price: 25503.1 }
       ],
       'commodity': [
-        { name: 'UKOUSD', price: 87.358 }, { name: 'USOUSD', price: 84.290 }, { name: 'XNGUSD', price: 2.85 },
-        { name: 'XCUUSD', price: 3.85 }, { name: 'XPTUSD', price: 980.50 }, { name: 'XPDUSD', price: 1020.30 }
+        { name: 'UKOUSD', price: 87.358 }, { name: 'USOUSD', price: 84.290 }
       ],
       'metal': [
-        { name: 'XAGUSD', price: 82.764 }, { name: 'XAUUSD', price: 5081.60 }, { name: 'XAUAUD', price: 3580.20 },
-        { name: 'XAGAUD', price: 43.80 }
+        { name: 'XAGUSD', price: 82.764 }, { name: 'XAUUSD', price: 5081.60 }
       ],
       'crypto': [
         { name: 'BTCUSD', price: 70594 }, { name: 'BCHUSD', price: 456.94 }, { name: 'RPLUSD', price: 1.4003 },
@@ -2136,6 +2134,7 @@ def submit_order_v1():
     now = int(time.time())
     
     # 获取有效期 (分钟)，默认 10 分钟
+    # 修复：从 data 中获取 inpTTL
     ttl_mins = float(data.get('inpTTL', 0) or 0)
     if ttl_mins <= 0:
         ttl_mins = 10
@@ -2152,11 +2151,25 @@ def submit_order_v1():
     }
     
     # 填充 account
+    account = None
     with history_lock:
+        # 优先从 history_status 获取 (最近一次心跳)
         if history_status and isinstance(history_status[0].get("parsed"), dict):
             account = norm_str(history_status[0]["parsed"].get("account"))
-            if account:
-                cmd["account"] = account
+        
+        # 如果 history_status 为空，尝试从 history_report 获取 (可能是刚启动)
+        if not account and history_report:
+            for rep in history_report:
+                if rep.get("parsed") and rep["parsed"].get("account"):
+                    account = norm_str(rep["parsed"].get("account"))
+                    break
+    
+    # 强制校验：如果依然无法获取 account，则禁止下单，防止生成无效命令
+    if not account:
+        print("[BLOCK] 无法获取当前账户信息 (account unknown)")
+        return jsonify({"success": False, "message": "无法获取当前账户信息，请等待 EA 连接"}), 400
+    
+    cmd["account"] = account
 
     # 判断类型
     # type: "market", "limit", "market_tpsl", "limit_tpsl", "quote"
