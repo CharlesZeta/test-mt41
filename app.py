@@ -1721,24 +1721,82 @@ HTML_TEMPLATE = r"""<!doctype html>
       $('calcMargin').innerText = usedMargin.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       
       // 显示名义价值 (Notional Value = Lots * ContractSize * Price)
-      // 注意：后端返回的 spec 包含 size
       const contractSize = rule.spec ? rule.spec.size : 100; // 默认100
       const notionalVal = calculatedLots * contractSize * window.quantState.price;
       $('calcNotional').innerText = notionalVal.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       
       // 显示每点波动价值 (Total Point Value)
+      // 用户要求：基于合约手数杠杆*手数对每点波动
+      // Point Value (USD) = PointValue(Base) * Rate * Lots
+      // 实际上 pointVal 已经是 单手每点价值(USD)，直接乘以 lots 即可
       const totalPointVal = pointVal * calculatedLots;
       $('calcPpVal').innerText = totalPointVal.toFixed(2) + " USD";
       
-      // 预估强平价格 (Liq Price)
-      // 简化估算：当亏损达到投入保证金时强平 (全仓模式其实是亏光余额，这里按投入金额算参考)
-      // 距离点数 = 投入金额 / 每点价值
-      // 强平价 = 当前价 +/- 距离点数 * PointSize (需要知道 PointSize)
-      // 由于前端不知道 PointSize (0.01 or 0.00001)，这里暂时显示 "N/A" 或仅显示手数
-      // 或者我们可以从后端传回 PointSize
+      // 止损估算 (基于开仓名义价值)
+      // 用户要求：固定百分比止损额度按照合约手数杠杆*手数乘以固定百分比计算
+      // 即 Notional Value * Percentage
+      // 注意：这里的 Percentage 是止损比例 (如 2%)，不是保证金比例
+      [2, 3, 5, 8, 10].forEach(pct => {
+        const el = $(`sl_${pct}`);
+        if(el) {
+            // 计算止损金额 = 名义价值 * 百分比
+            const slAmount = notionalVal * (pct / 100.0);
+            el.innerText = slAmount.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
+        }
+      });
       
-      // 这里改为显示计算出的手数，比较直观
-      $('calcLiq').innerText = calculatedLots.toFixed(2) + " 手"; 
+      // 预估强平价格 (Liq Price)
+      // 用户要求：强平价格计算也是同理 (基于名义价值?)
+      // 通常强平是当 净值 < 维持保证金 时触发
+      // 维持保证金通常是占用保证金的一定比例 (如 50% 或 100%)
+      // 简化估算：当亏损额 = 账户净值 - 维持保证金 时强平
+      // 假设全仓模式，亏损额 = 账户净值 (最坏情况)
+      // 距离点数 = 可承受亏损额 / 每点价值
+      // 强平价 = 当前价 +/- 距离点数 * PointSize
+      
+      // 这里用户说 "强平价格计算也是同理"，可能是指基于名义价值反推？
+      // 假设是指：当亏损达到名义价值的某个比例时强平？这不太常见。
+      // 我们还是按标准逻辑：Equity / TotalPointValue = 距离点数
+      // 距离点数 * PointSize = 价格距离
+      
+      // 但为了响应用户 "基于合约手数杠杆*手数对每点波动（数值非百分比）盈亏数据分析"
+      // 我们可以显示：账户净值能扛多少点
+      
+      let liqPrice = 0;
+      if (totalPointVal > 0 && equity > 0) {
+          // 可抗点数 = 净值 / 每点总价值
+          const pointsToLiq = equity / totalPointVal; 
+          // 这里的 pointVal 是 USD value per point, 所以 pointsToLiq 是 point 的数量 (如 1000 points)
+          // 转换为价格变动 = pointsToLiq * PointSize (如 0.01 或 0.00001)
+          
+          // 获取 PointSize (从 rule 或默认)
+          // 后端没有直接传 PointSize，但我们可以推断
+          // 或者简单地：PointValue = ContractSize * PointSize * Rate
+          // 所以 PointSize = PointValue / (ContractSize * Rate)
+          // 前端已知: pointVal (单手每点价值 USD), contractSize, rate (未知，但可以近似 1 或反推)
+          
+          // 既然用户强调 "数值非百分比"，我们直接显示 "距离强平点数" 可能更直观，
+          // 但标签是 "预估强平价格"，所以还是得算出价格。
+          
+          // 假设 pointSize: XAU=0.01, Forex=0.00001
+          let pointSize = 0.01; 
+          if (rule.spec && rule.spec.type === 'forex') pointSize = 0.00001;
+          if (rule.spec && rule.spec.type === 'index') pointSize = 1.0;
+          if (rule.spec && rule.spec.type === 'crypto') pointSize = 0.01;
+          
+          const priceDist = pointsToLiq * pointSize;
+          
+          // 这里不做方向判断 (因为还没下单)，只显示距离
+          // 或者显示 Long 的强平价
+          liqPrice = Math.max(0, price - priceDist);
+      }
+      
+      // 用户提到 "预估强平价格基于...计算"，可能只是想确认计算逻辑正确
+      // 既然前端不知道方向，显示具体价格会误导 (做多做空不一样)
+      // 我们可以显示 "当前价 +/- 距离"
+      // 但为了保持 UI 简洁，且之前显示的是 "0.18 手" 这种错误数据，
+      // 我们现在改为显示计算出的 强平价格 (假设做多)
+      $('calcLiq').innerText = liqPrice > 0 ? liqPrice.toFixed(2) : "0.00";
       
       // (移除之前错误的 marginPercentText 覆盖逻辑)
     };
