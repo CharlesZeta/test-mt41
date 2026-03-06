@@ -32,15 +32,39 @@ pause_lock = threading.Lock()
 
 # ==================== 命令过期清理 ====================
 def cleanup_expired_commands():
-    """清理过期命令，防止积压"""
+    """清理过期命令，防止积压，并记录过期状态"""
     now = int(time.time())
     with commands_lock:
-        original_len = len(commands)
-        valid = [c for c in commands if now - c.get("created_at", 0) < c.get("ttl_sec", 10)]
-        commands[:] = valid
-        removed = original_len - len(valid)
-        if removed > 0:
-            print(f"[CLEANUP] 清理了 {removed} 条过期命令，剩余 {len(commands)} 条")
+        # 识别过期命令 (默认 600s TTL 如果未设置)
+        expired = [c for c in commands if now - c.get("created_at", 0) >= c.get("ttl_sec", 600)]
+        
+        # 保留未过期的命令
+        commands[:] = [c for c in commands if now - c.get("created_at", 0) < c.get("ttl_sec", 600)]
+        
+        if expired:
+            print(f"[CLEANUP] 清理了 {len(expired)} 条过期命令")
+            with history_lock:
+                for cmd in expired:
+                    # 构造一个模拟的过期报告
+                    record = {
+                        "received_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "ip": "127.0.0.1", # Internal
+                        "method": "INTERNAL",
+                        "path": "cleanup",
+                        "category": "report",
+                        "headers": {},
+                        "body_raw": "{}",
+                        "parsed": {
+                            "cmd_id": cmd.get("id"),
+                            "ok": False,
+                            "ticket": 0,
+                            "error": "ORDER_EXPIRED",
+                            "message": f"订单超时未执行 (TTL {cmd.get('ttl_sec', 600)}s)",
+                            "exec_ms": 0,
+                            "desc": "ORDER_EXPIRED"
+                        }
+                    }
+                    history_report.appendleft(record)
 
 # 定时清理线程
 def cleanup_scheduler():
@@ -1418,7 +1442,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       else if(typeCode === 'limit') { html += renderInput('触发价', '0.00', 'inpPrice'); }
       else if(typeCode === 'limit_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); html += renderInput('触发价', '0.00', 'inpPrice'); }
       
-      // html += renderInput('有效时间 (分钟)', '输入过期分钟数');
+      html += renderInput('有效期 (分钟)', '默认 10 分钟', 'inpTTL');
       area.innerHTML = html;
     };
 
@@ -2026,11 +2050,18 @@ def submit_order_v1():
     # 构造命令对象
     global cmd_counter
     now = int(time.time())
+    
+    # 获取有效期 (分钟)，默认 10 分钟
+    ttl_mins = float(data.get('inpTTL', 0) or 0)
+    if ttl_mins <= 0:
+        ttl_mins = 10
+    ttl_sec = int(ttl_mins * 60)
+    
     cmd = {
         "id": str(cmd_counter),
         "nonce": generate_nonce(),
         "created_at": now,
-        "ttl_sec": 30, # 稍微长一点
+        "ttl_sec": ttl_sec,
         "symbol": symbol,
         "volume": lots,
         "lots": lots
