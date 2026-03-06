@@ -1031,7 +1031,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       <div class="symCenter">
         <div class="symName">
           <span id="symName">XAUUSD</span>
-          <span class="symBadge" onclick="$('pairMask').style.display='flex'">切换品种 ▼</span>
+          <span class="symBadge" onclick="openCurrentCategoryPairs()">切换品种 ▼</span>
         </div>
       </div>
       <div class="symRight">
@@ -1710,6 +1710,13 @@ HTML_TEMPLATE = r"""<!doctype html>
       });
       container.innerHTML = html;
       $('pairMask').style.display = 'flex';
+    };
+
+    // 新增：打开当前分类的品种列表
+    window.openCurrentCategoryPairs = function() {
+        const activeTab = document.querySelector('.tabs .tab.active');
+        const category = activeTab ? activeTab.getAttribute('data-category') : 'metal'; // 默认 metal
+        window.showCategoryPairs(category);
     };
 
     window.setSymbol = function(name, price) {
