@@ -119,7 +119,7 @@ def is_restricted_time():
     h = now.hour
     # 规则：只有 5:00 - 24:00 允许交易 (即 [5, 24))
     # 禁止时段: 0, 1, 2, 3, 4 点
-    if 0 <= h < 5:
+    if 0 <= h <4:
         return True
     return False
 
@@ -276,6 +276,89 @@ def store_mt4_data(raw_body, client_ip, headers_dict):
 
 def safe_num(x):
     return isinstance(x, (int, float))
+
+# ==================== 风控逻辑 ====================
+# 全局风控状态
+risk_state = {
+    "is_fused": False,          # 是否熔断 (当日不再交易)
+    "cooldown_until": 0,        # 冷静期结束时间戳 (0 表示无冷静期)
+    "consecutive_losses": 0,    # 连续亏损次数
+    "last_reset_day": None,     # 上次重置风控状态的日期
+    "locked_tickets": set()     # 锁定的订单 Ticket (禁止手动操作)
+}
+risk_lock = threading.RLock()
+
+def get_utc8_date_str():
+    """获取当前 UTC+8 日期字符串 YYYY-MM-DD"""
+    return datetime.utcfromtimestamp(time.time() + 8*3600).strftime("%Y-%m-%d")
+
+def check_risk_status(account, current_equity, day_start_equity):
+    """
+    检查风控状态，返回 (是否允许交易, 拒绝原因/状态描述, 状态类型)
+    状态类型: "normal", "fused", "cooldown", "restricted_time"
+    """
+    global risk_state
+    now = int(time.time())
+    today_str = get_utc8_date_str()
+    
+    with risk_lock:
+        # 1. 跨天重置
+        if risk_state["last_reset_day"] != today_str:
+            risk_state["is_fused"] = False
+            risk_state["consecutive_losses"] = 0
+            risk_state["cooldown_until"] = 0
+            risk_state["last_reset_day"] = today_str
+            print(f"[RISK] New day {today_str}, reset risk state.")
+
+        # 2. 检查熔断 (当日不再交易)
+        if risk_state["is_fused"]:
+            return False, "触发熔断机制，今日交易已停止", "fused"
+
+        # 3. 检查冷静期
+        if now < risk_state["cooldown_until"]:
+            remaining = int((risk_state["cooldown_until"] - now) / 60)
+            return False, f"处于冷静期，还需等待 {remaining} 分钟", "cooldown"
+
+        # 4. 检查日内亏损 (累计亏损 > 9%)
+        if day_start_equity > 0:
+            daily_pnl_pct = (current_equity - day_start_equity) / day_start_equity
+            if daily_pnl_pct < -0.09: # 亏损超过 9%
+                risk_state["is_fused"] = True
+                print(f"[RISK] Daily loss {daily_pnl_pct*100:.2f}% > 9%, FUSED.")
+                return False, "日内亏损超限，触发熔断", "fused"
+
+        # 5. 检查时间限制 (0:00 - 5:00)
+        # 注意：这里复用 is_restricted_time 逻辑，但为了统一返回格式，单独判断
+        if is_restricted_time():
+             return False, "交易已暂停 (系统维护时段)", "restricted_time"
+
+    return True, "交易正常", "normal"
+
+def update_risk_after_trade(trade_profit, open_price, close_price, side):
+    """
+    每笔交易结算后更新风控计数器
+    trade_profit: 交易盈亏 (USD)
+    """
+    global risk_state
+    with risk_lock:
+        if trade_profit < 0:
+            risk_state["consecutive_losses"] += 1
+            print(f"[RISK] Loss detected. Consecutive: {risk_state['consecutive_losses']}")
+            
+            # 规则：连续亏损 3 次 -> 熔断
+            if risk_state["consecutive_losses"] >= 3:
+                risk_state["is_fused"] = True
+                print("[RISK] Consecutive losses >= 3, FUSED.")
+            
+            # 规则：连续亏损 2 次 -> 冷静 1 小时
+            elif risk_state["consecutive_losses"] == 2:
+                risk_state["cooldown_until"] = int(time.time()) + 3600
+                print("[RISK] Consecutive losses == 2, Cooldown 1h.")
+        else:
+            # 盈利则重置连亏计数 (除非需求是"累计"连亏? 通常连亏是指连续的)
+            # 用户描述："连续亏损不超过3次"，意味着盈利会打断连亏
+            if trade_profit > 0:
+                risk_state["consecutive_losses"] = 0
 
 # ==================== 数据持久化 (每日盈亏 & 历史委托) ====================
 DAILY_STATS_FILE = "daily_stats.json"
@@ -788,6 +871,23 @@ def extract_latest_details_from_status(record, positions=None):
     parsed = auto_fill_status(parsed, positions)
 
     metrics = parsed.get("metrics", {})
+    
+    # 注入全局风控状态 (重要)
+    global risk_state
+    current_risk_status = "normal"
+    risk_msg = ""
+    with risk_lock:
+        if risk_state["is_fused"]:
+            current_risk_status = "fused"
+            risk_msg = "触发熔断机制"
+        elif int(time.time()) < risk_state["cooldown_until"]:
+            current_risk_status = "cooldown"
+            risk_msg = "处于冷静期"
+    
+    # 如果处于限制时间，也可以在这里覆盖，或者由前端 checkTradeTime 处理
+    if is_restricted_time():
+        current_risk_status = "restricted_time"
+        risk_msg = "系统维护时段"
 
     return {
         **base_info,
@@ -818,6 +918,9 @@ def extract_latest_details_from_status(record, positions=None):
         "position_pct": metrics.get("position_pct", 0),
         # 添加 positions 数据供前端展示
         "positions": positions if positions else [],
+        # 添加风控状态
+        "risk_status": current_risk_status,
+        "risk_msg": risk_msg,
     }
 
 # ==================== 暂停控制接口 ====================
@@ -1993,36 +2096,75 @@ HTML_TEMPLATE = r"""<!doctype html>
     window.checkTradeTime = function() {
         const now = new Date();
         const h = now.getHours();
-        const isRestricted = (h >= 0 && h < 5); // 0:00 - 5:00
+        
+        // 1. 基础时间限制
+        const isTimeRestricted = (h >= 0 && h < 5); // 0:00 - 5:00
+        
+        // 2. 后端风控状态 (从 refreshData 获取)
+        const riskStatus = window.quantState ? window.quantState.riskStatus : 'normal';
+        const riskMsg = window.quantState ? window.quantState.riskMsg : '';
+        
+        // 综合判断是否限制交易
+        // 优先级: 熔断 > 冷静期 > 时间限制
+        let isRestricted = false;
+        let title = "交易已暂停";
+        let subTitle = "每日 0:00 - 5:00 为系统维护时段";
+        let slogan = "为人民服务";
+        
+        if (riskStatus === 'fused') {
+            isRestricted = true;
+            title = "触发熔断机制";
+            subTitle = "当日累计亏损超限或连续亏损，交易已停止";
+            slogan = "熔断保护中";
+        } else if (riskStatus === 'cooldown') {
+            isRestricted = true;
+            title = "处于冷静期";
+            subTitle = "连续亏损触发强制冷静，请休息片刻";
+            slogan = "冷静期";
+        } else if (isTimeRestricted) {
+            isRestricted = true;
+            // 使用默认文案
+        }
         
         const mainGrid = document.querySelector('.main-grid');
         const nightMode = document.getElementById('nightMode');
         
         if (isRestricted) {
             if (mainGrid) mainGrid.style.display = 'none';
-            if (!nightMode) {
-                // 插入夜间模式占位图
+            
+            // 如果已经存在提示页，检查是否需要更新内容 (例如从时间限制变成了熔断)
+            if (nightMode) {
+                const currentTitle = nightMode.querySelector('.night-title').innerText;
+                if (currentTitle !== title) {
+                    nightMode.remove(); // 移除旧的，重新创建
+                }
+            }
+            
+            if (!document.getElementById('nightMode')) {
+                // 插入占位图
                 const div = document.createElement('div');
                 div.id = 'nightMode';
                 div.style.textAlign = 'center';
                 div.style.padding = '3rem 1rem';
                 div.innerHTML = `
                     <div style="font-size: 2.5rem; margin-bottom: 1rem;">😴</div>
-                    <div style="font-size: 1.5rem; font-weight: 800; color: var(--text); margin-bottom: 0.5rem;">交易已暂停</div>
-                    <div style="color: var(--muted); font-weight: 600;">每日 0:00 - 5:00 为系统维护时段</div>
-                    <div style="margin-top: 2rem; font-family: 'STKaiti', serif; font-size: 2rem; color: #d4af37; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">为人民服务</div>
-                    <div style="margin-top: 0.5rem; font-family: monospace; color: var(--muted); font-size: 1.25rem;">${now.getFullYear()}年${String(now.getMonth()+1).padStart(2,'0')}月${String(now.getDate()).padStart(2,'0')}日 ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}</div>
+                    <div class="night-title" style="font-size: 1.5rem; font-weight: 800; color: var(--text); margin-bottom: 0.5rem;">${title}</div>
+                    <div style="color: var(--muted); font-weight: 600;">${subTitle}</div>
+                    <div style="margin-top: 2rem; font-family: 'STKaiti', serif; font-size: 2rem; color: #d4af37; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">${slogan}</div>
+                    <div class="night-time" style="margin-top: 0.5rem; font-family: monospace; color: var(--muted); font-size: 1.25rem;">${now.getFullYear()}年${String(now.getMonth()+1).padStart(2,'0')}月${String(now.getDate()).padStart(2,'0')}日 ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}</div>
                 `;
                 // 插入到 main-grid 之后
-                mainGrid.parentNode.insertBefore(div, mainGrid.nextSibling);
+                if(mainGrid && mainGrid.parentNode) {
+                    mainGrid.parentNode.insertBefore(div, mainGrid.nextSibling);
+                }
             } else {
-                // 更新时间
-                const timeEl = nightMode.querySelector('div:last-child');
+                // 仅更新时间
+                const timeEl = document.querySelector('.night-time');
                 if(timeEl) timeEl.innerText = `${now.getFullYear()}年${String(now.getMonth()+1).padStart(2,'0')}月${String(now.getDate()).padStart(2,'0')}日 ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
             }
         } else {
             if (mainGrid) mainGrid.style.display = 'flex';
-            if (nightMode) nightMode.remove();
+            if (document.getElementById('nightMode')) document.getElementById('nightMode').remove();
         }
     };
 
@@ -2519,8 +2661,9 @@ def index():
 def submit_order_v1():
     global cmd_counter
     
+    # 1. 基础时间限制 (0:00 - 5:00)
     if is_restricted_time():
-        return jsonify({"success": False, "message": "非交易时段，禁止下单"}), 403
+        return jsonify({"success": False, "message": "非交易时段 (0:00-5:00)，禁止下单"}), 403
 
     data = request.json
     print(f"【API】收到下单请求: {data}")
@@ -2530,6 +2673,37 @@ def submit_order_v1():
     side_raw = data.get('side', '')
     cmd_type_raw = data.get('type', 'market')
     
+    # 2. 风控状态检查 (熔断/冷静期)
+    # QUOTE 和 CLOSE (如果不是手动平锁定仓位) 是否受限? 
+    # QUOTE 不受限。CLOSE 受限吗? "超过就熔断，当日不再交易" -> 通常指不开新仓
+    # 但如果是平仓，应该是允许的，除非是锁定的仓位。
+    # 这里我们只限制 开仓 (MARKET/LIMIT)
+    
+    if side_raw != 'QUOTE' and side_raw != 'CLOSE' and cmd_type_raw != 'quote':
+        # 获取账户信息用于风控检查
+        account = None
+        current_equity = 0
+        day_start_equity = 0
+        with history_lock:
+            if history_status and isinstance(history_status[0].get("parsed"), dict):
+                parsed = history_status[0]["parsed"]
+                account = norm_str(parsed.get("account"))
+                current_equity = parsed.get("equity", 0)
+                day_start_equity = parsed.get("day_start_equity", 0)
+        
+        if account:
+            allowed, msg, status_type = check_risk_status(account, current_equity, day_start_equity)
+            if not allowed:
+                print(f"[RISK] Order rejected: {msg}")
+                return jsonify({"success": False, "message": msg, "risk_status": status_type}), 403
+
+    # 3. 锁定仓位检查 (针对 CLOSE)
+    if side_raw == 'CLOSE':
+        ticket = str(data.get("ticket"))
+        with risk_lock:
+            if ticket in risk_state["locked_tickets"]:
+                return jsonify({"success": False, "message": "该仓位已锁定，禁止手动平仓"}), 403
+
     # 优先放行 QUOTE 命令，无需计算 lots
     if side_raw == 'QUOTE' or cmd_type_raw == 'quote':
         print(f"[ORDER][QUOTE] Processing for {symbol}")
@@ -2667,6 +2841,13 @@ def submit_order_v1():
 def modify_position_v1():
     data = request.json
     position_id = data.get('positionId') # Ticket
+    
+    # 锁定检查
+    if position_id:
+        with risk_lock:
+            if str(position_id) in risk_state["locked_tickets"]:
+                return jsonify({"success": False, "message": "该仓位已锁定，禁止修改"}), 403
+
     tp = float(data.get('tpPrice', 0) or 0)
     sl = float(data.get('slPrice', 0) or 0)
     
@@ -2686,9 +2867,12 @@ def modify_position_v1():
 def lock_position_v1():
     data = request.json
     position_id = data.get('positionId')
-    print(f"【API】执行锁仓: {position_id}")
+    print(f"【API】执行锁仓(标记锁定): {position_id}")
     
-    # 锁仓逻辑：查找该持仓，获取 symbol 和 lots，然后开反向单
+    # 锁仓逻辑更新：不再反向开仓，而是标记为"Locked"，禁止手动操作
+    # 只有达到 TP/SL 才能结算
+    
+    # 1. 验证持仓是否存在
     target_pos = None
     with history_lock:
         if history_positions and history_positions[0].get("parsed"):
@@ -2698,41 +2882,15 @@ def lock_position_v1():
                     target_pos = p
                     break
     
-    if target_pos:
-        symbol = target_pos.get("symbol")
-        current_side = target_pos.get("side") # buy/sell
-        lots = target_pos.get("lots")
+    if not target_pos:
+        return jsonify({"success": False, "message": "未找到持仓，无法锁仓"}), 404
         
-        reverse_side = "sell" if current_side == "buy" else "buy"
+    # 2. 标记锁定
+    global risk_state
+    with risk_lock:
+        risk_state["locked_tickets"].add(str(position_id))
         
-        # 生成反向下单命令
-        global cmd_counter
-        cmd = {
-            "id": str(cmd_counter),
-            "nonce": generate_nonce(),
-            "created_at": int(time.time()),
-            "ttl_sec": 30,
-            "action": "market",
-            "symbol": symbol,
-            "side": reverse_side,
-            "volume": lots,
-            "lots": lots
-        }
-        
-        # 填充 account
-        with history_lock:
-            if history_status and isinstance(history_status[0].get("parsed"), dict):
-                account = norm_str(history_status[0]["parsed"].get("account"))
-                if account:
-                    cmd["account"] = account
-
-        with commands_lock:
-            commands.append(cmd)
-            cmd_counter += 1
-            
-        return jsonify({"success": True, "message": "锁仓指令(反向开单)已发送"})
-    
-    return jsonify({"success": False, "message": "未找到持仓，无法锁仓"}), 404
+    return jsonify({"success": True, "message": "仓位已锁定 (禁止手动平仓/修改，等待止盈止损结算)"})
 
 @app.route('/api/v1/calendar', methods=['GET'])
 def get_calendar_pnl_v1():
