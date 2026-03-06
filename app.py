@@ -876,6 +876,8 @@ def extract_latest_details_from_status(record, positions=None):
     global risk_state
     current_risk_status = "normal"
     risk_msg = ""
+    locked_tickets_list = []
+    
     with risk_lock:
         if risk_state["is_fused"]:
             current_risk_status = "fused"
@@ -883,6 +885,9 @@ def extract_latest_details_from_status(record, positions=None):
         elif int(time.time()) < risk_state["cooldown_until"]:
             current_risk_status = "cooldown"
             risk_msg = "处于冷静期"
+        
+        # 转换为 list 传给前端
+        locked_tickets_list = list(risk_state["locked_tickets"])
     
     # 如果处于限制时间，也可以在这里覆盖，或者由前端 checkTradeTime 处理
     if is_restricted_time():
@@ -921,6 +926,7 @@ def extract_latest_details_from_status(record, positions=None):
         # 添加风控状态
         "risk_status": current_risk_status,
         "risk_msg": risk_msg,
+        "locked_tickets": locked_tickets_list
     }
 
 # ==================== 暂停控制接口 ====================
@@ -1599,7 +1605,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         </div>
 
         <button class="cta" style="background:var(--text); color:#fff; width:100%" onclick="submitModifyOrder()">保存修改</button>
-        <button class="lock-btn" onclick="executeLockPosition()">🔒 一键对冲锁仓</button>
+        <button class="lock-btn" onclick="executeLockPosition()">🔒 锁定当前仓位</button>
       </div>
     </div>
   </div>
@@ -2052,7 +2058,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       // 锁仓逻辑简化，直接发送锁仓请求
       if(!window.currentModifyTicket) return;
       
-      if (confirm('警告：一键锁仓将开立相同手数的反向订单对冲，是否继续？')) {
+      if (confirm('警告：锁定后将禁止手动操作该仓位，必须等待止盈止损自动结算，是否继续？')) {
         window.API.lockPosition(window.currentModifyTicket).then((res) => {
           alert(res.message);
           $('modifyMask').style.display = 'none';
