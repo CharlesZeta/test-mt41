@@ -21,14 +21,14 @@ history_report = deque(maxlen=MAX_HISTORY)     # /mt4/report
 history_poll = deque(maxlen=MAX_HISTORY)       # /mt4/commands 轮询请求（account/max）
 history_echo = deque(maxlen=MAX_HISTORY)       # /web/api/echo
 
-history_lock = threading.Lock()
+history_lock = threading.RLock()
 
 commands = []
-commands_lock = threading.Lock()
+commands_lock = threading.RLock()
 cmd_counter = 0
 
 paused = False
-pause_lock = threading.Lock()
+pause_lock = threading.RLock()
 
 # ==================== 产品规则表 ====================
 PRODUCT_SPECS = {
@@ -361,6 +361,7 @@ def calc_lots_from_margin_usd(symbol, margin_usd, data):
     # 获取最新价格
     price = get_latest_price(symbol)
     if not price or price <= 0:
+        print(f"[CALC_LOTS] Error: Price 0 or missing for {symbol}")
         return 0.0
     
     # 查找规则
@@ -393,6 +394,7 @@ def calc_lots_from_margin_usd(symbol, margin_usd, data):
         return 0.0
         
     lots = (margin_usd * leverage) / (price * contract_size * rate_to_usd)
+    print(f"[CALC_LOTS] {symbol} Margin=${margin_usd} Lev={leverage} Price={price} Rate={rate_to_usd} -> Lots={lots:.4f}")
     return lots
 
 def get_rate_to_usd(currency):
@@ -432,9 +434,11 @@ def get_latest_price(symbol):
                 try:
                     msg = json.loads(parsed.get("message", "{}"))
                     if "bid" in msg:
+                        # print(f"[PRICE] Found {symbol} bid={msg['bid']}") # 可选：过于频繁可不打
                         return (msg["bid"] + msg["ask"]) / 2 # 取中间价估算
                 except:
                     pass
+    print(f"[PRICE] Warn: No quote found for {symbol}")
     return None
 
 def calc_lot_info(symbol, price, lots):
@@ -1320,10 +1324,17 @@ HTML_TEMPLATE = r"""<!doctype html>
           <div class="range-wrap" style="margin-top: auto;">
             <div class="range-header">
               <span>投入保证金金额</span>
-              <span style="color: var(--text); font-size: 1rem;">
-                <span id="pctText">10</span> USD 
-                <span style="font-size: 0.75rem; color: var(--muted); margin-left: 0.25rem;">(<span id="marginPercentText">0</span>%)</span>
-              </span>
+              <div style="text-align: right;">
+                <span style="color: var(--text); font-size: 1rem;">
+                  <span id="pctText">10</span> USD 
+                </span>
+                <span style="display:block; font-size: 0.75rem; color: var(--text); font-weight: 800; margin-top: 2px;">
+                  ≈ <span id="calcLotsText">0.00</span> 手
+                </span>
+                <span style="font-size: 0.75rem; color: var(--muted);">
+                  (占余额 <span id="marginPercentText">0</span>%)
+                </span>
+              </div>
             </div>
             <input type="range" id="marginSlider" min="0" max="100" step="1" value="10">
           </div>
@@ -1581,7 +1592,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     // 暴露全局函数供 HTML 调用
     window.updateCalculations = function() {
-      const { marginPct, leverage, price, equity, availMargin } = window.quantState;
+      const { marginPct, equity, availMargin } = window.quantState; // 移除 leverage, price 从 state 取
       // marginPct 这里实际存的是用户选择的“投入保证金金额 USD”
       const usedMargin = marginPct; 
       
@@ -1596,9 +1607,9 @@ HTML_TEMPLATE = r"""<!doctype html>
 
       // 获取当前品种规则 (从 refreshData 注入到 quantState)
       const rule = window.quantState.symbolRules || {};
+      // 核心：优先使用后端下发的杠杆/保证金规则，忽略前端滑块的 leverage
       const marginPerLot = rule.margin_per_lot_usd || 0;
       const pointVal = rule.point_val_usd || 0;
-      const contractSize = rule.spec ? rule.spec.size : 100; // 仅供参考
       
       let calculatedLots = 0;
       if (marginPerLot > 0) {
@@ -1623,6 +1634,10 @@ HTML_TEMPLATE = r"""<!doctype html>
           percentage = (usedMargin / availMargin) * 100;
       }
       $('marginPercentText').innerText = percentage.toFixed(0);
+      
+      // 更新独立的手数显示 (修复之前的覆盖 bug)
+      const lotsEl = $('calcLotsText');
+      if(lotsEl) lotsEl.innerText = calculatedLots.toFixed(2);
 
       // 止损估算 (基于每点价值)
       // 亏损金额 = 点数 * 每点价值 * 手数
@@ -1662,21 +1677,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       
       // 这里改为显示计算出的手数，比较直观
       $('calcLiq').innerText = calculatedLots.toFixed(2) + " 手"; 
-      // 实际上 UI label 是 "预估强平价格"，这里偷换概念改为 "预估执行手数" 可能不妥
-      // 但为了响应 Prompt "显示计算后的 lots"，我们可以把 calcLiq 的 label 改一下，或者找地方显示 lots
-      // 实际上 range-header 里已经有 lotsText (但被注释掉了)，我们恢复它
-      // 或者直接在 calcLiq 位置显示 lots
       
-      // 修正：在 "投入保证金金额" 后面显示 lots
-      // 原有 HTML: <span id="pctText">10</span> USD ...
-      // 我们可以在 range-header 里追加显示 lots
-      const lotsDisplay = $('marginPercentText').parentElement; // span
-      if(lotsDisplay) {
-          // 借用 marginPercentText 的位置或追加
-          // 现在的格式: 10 USD (1%)
-          // 改为: 10 USD (0.15 手)
-          $('marginPercentText').innerText = calculatedLots.toFixed(2) + " 手";
-      }
+      // (移除之前错误的 marginPercentText 覆盖逻辑)
     };
 
     window.setOrderType = function(typeCode, typeName) {
@@ -2334,7 +2336,7 @@ def submit_order_v1():
 
     data = request.json
     print(f"【API】收到下单请求: {data}")
-    print(f"[ORDER] recv data={json.dumps(data)}")
+    print(f"[ORDER] Recv: {json.dumps(data)}")
     
     symbol = norm_symbol(data.get('symbol'))
     side_raw = data.get('side', '')
@@ -2342,7 +2344,7 @@ def submit_order_v1():
     
     # 优先放行 QUOTE 命令，无需计算 lots
     if side_raw == 'QUOTE' or cmd_type_raw == 'quote':
-        print(f"[ORDER][QUOTE] accepted symbol={symbol}")
+        print(f"[ORDER][QUOTE] Processing for {symbol}")
         # 构造简单命令对象
         global cmd_counter
         now = int(time.time())
@@ -2376,31 +2378,20 @@ def submit_order_v1():
     
     lots = 0.0
     if inp_margin_usd > 0 and current_price > 0:
-        # 使用后端规则计算 lots
-        # 需要一个临时 lots=1 来计算单手保证金，然后反推
-        spec = PRODUCT_SPECS.get(symbol)
-        if not spec:
-            if len(symbol) == 6: spec = DEFAULT_FOREX_SPEC.copy(); spec["currency"] = symbol[3:]
-            else: spec = DEFAULT_STOCK_SPEC.copy()
-            
-        settle_curr = spec.get("currency", "USD")
-        rate_to_usd = get_rate_to_usd(settle_curr)
-        contract_size = spec["size"]
-        leverage = spec["lev"]
-        
-        # Lots = (MarginUSD * Leverage) / (Price * ContractSize * RateToUSD)
-        if rate_to_usd > 0:
-            lots = (inp_margin_usd * leverage) / (current_price * contract_size * rate_to_usd)
-            # 简单保留2位小数，EA端会做最终归一化
-            lots = round(lots, 2)
-            print(f"[CALC] {symbol} MarginUSD={inp_margin_usd} Price={current_price} Rate={rate_to_usd} -> Lots={lots}")
+        # 使用 calc_lots_from_margin_usd 统一计算
+        # 注意：这里构造一个伪造的 data 对象传给计算函数，因为它只需要 equity (可选) 和查价格
+        # 实际上 calc_lots_from_margin_usd 内部会再次查价格
+        lots = calc_lots_from_margin_usd(symbol, inp_margin_usd, {"equity": 0})
+        # 简单保留2位小数，EA端会做最终归一化
+        lots = round(lots, 2)
     
     # 如果计算失败或未提供 margin，尝试使用前端传的 lots (兼容旧逻辑)
     if lots <= 0:
+        print(f"[ORDER] Calc lots failed or 0, fallback to frontend lots")
         lots = float(data.get('lots', 0))
     
     if lots <= 0:
-        print(f"[ORDER][REJECT] invalid lots={lots}")
+        print(f"[ORDER][REJECT] Invalid lots: {lots}")
         return jsonify({"success": False, "message": "计算手数无效，请检查投入金额或价格"}), 400
 
     # 构造命令对象
