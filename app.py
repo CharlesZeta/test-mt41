@@ -1622,7 +1622,7 @@ HTML_TEMPLATE = r"""<!doctype html>
           </div>
 
           <!-- 止盈 -->
-          <div class="form-row-colored green">
+          <div class="form-row-colored green" id="row-tp">
              <label>止盈触发价:</label>
              <div class="input-wrap">
                 <input type="number" id="inpTp" placeholder="0.00">
@@ -1631,7 +1631,7 @@ HTML_TEMPLATE = r"""<!doctype html>
           </div>
 
           <!-- 止损 -->
-          <div class="form-row-colored red">
+          <div class="form-row-colored red" id="row-sl">
              <label>止损触发价:</label>
              <div class="input-wrap">
                 <input type="number" id="inpSl" placeholder="0.00">
@@ -2046,6 +2046,19 @@ HTML_TEMPLATE = r"""<!doctype html>
               // 市场模式：显示浮动
               floatText.style.display = 'inline';
               inpPrice.style.display = 'none';
+          }
+      }
+      
+      // 切换止盈止损行显示 (仅在 *_tpsl 模式下显示)
+      const rowTp = $('row-tp');
+      const rowSl = $('row-sl');
+      if(rowTp && rowSl) {
+          if(typeCode.includes('tpsl')) {
+              rowTp.style.display = 'flex';
+              rowSl.style.display = 'flex';
+          } else {
+              rowTp.style.display = 'none';
+              rowSl.style.display = 'none';
           }
       }
     };
