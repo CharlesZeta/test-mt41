@@ -1253,55 +1253,94 @@ HTML_TEMPLATE = r"""<!doctype html>
     input[type=range]::-webkit-slider-thumb { height: 1.5rem; width: 1.5rem; border-radius: 50%; background: #fff; border: 4px solid var(--text); -webkit-appearance: none; margin-top: -0.5625rem; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
 
     /* ========== 交易面板新样式 (图1/图3风格) ========== */
-    .trade-card { padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
+    .trade-card { padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; background: #fff; }
     
-    .trade-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
-    .trade-badges { display: flex; gap: 0.5rem; }
-    .trade-balance { font-size: 0.875rem; font-weight: 600; color: var(--muted); text-align: right; }
+    .trade-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; }
+    .trade-badges { display: flex; gap: 0.5rem; align-items: center; }
+    .trade-balance { font-size: 0.875rem; font-weight: 600; color: var(--muted); }
     .trade-balance .value { color: var(--text); font-weight: 800; font-family: monospace; }
 
-    /* 表单行优化 */
-    .form-row {
-      display: flex; justify-content: space-between; align-items: center;
-      background: #f9fafb; /* 更轻的背景 */
-      border-radius: 0.75rem; 
-      padding: 0 1rem;
-      margin-bottom: 0.75rem;
-      min-height: 3.5rem;
-      border: 1px solid transparent;
-      transition: all 0.2s;
+    /* 交易类型标题 */
+    .trade-type-title { 
+      font-size: 1.125rem; font-weight: 800; color: var(--text); 
+      margin-bottom: 0.5rem; display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer;
     }
-    .form-row:active { background: #f3f4f6; }
-    .form-row label { color: var(--muted); font-size: 0.9375rem; font-weight: 600; }
-    .form-row input { text-align: right; font-size: 1.125rem; font-weight: 700; color: var(--text); background: transparent; width: 100%; border: none; outline: none; }
-    .form-row .value-text { font-size: 1rem; font-weight: 700; color: var(--text); }
-    
-    /* 只读/展示行 */
-    .form-row.readonly { background: transparent; padding: 0 0.5rem; min-height: 2.5rem; margin-bottom: 0.5rem; border: none; }
-    .form-row.readonly label { font-size: 0.875rem; }
-    .form-row.readonly .value-text { font-size: 0.9375rem; }
 
-    /* 交易数量区域 */
-    .volume-section { margin-top: 0.5rem; margin-bottom: 1rem; }
-    .volume-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; }
-    .volume-header label { font-size: 0.875rem; font-weight: 700; color: var(--muted); }
-    .volume-display { font-size: 0.875rem; font-weight: 700; color: var(--text); }
-    .highlight-lots { font-size: 1.5rem; font-weight: 800; color: var(--text); margin-right: 2px; }
-    
-    .volume-sub { display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.75rem; color: var(--muted); }
+    /* 手数步进器 */
+    .stepper-row { 
+      display: flex; align-items: center; justify-content: space-between; 
+      background: #f5f7fa; border-radius: 0.75rem; padding: 0.25rem;
+      margin-bottom: 0.75rem;
+    }
+    .step-btn { 
+      border: none; background: transparent; color: #3b82f6; 
+      font-weight: 700; font-size: 0.875rem; padding: 0.5rem 0.75rem; 
+      cursor: pointer; min-width: 3rem;
+    }
+    .step-btn:active { opacity: 0.7; }
+    #inpLots { 
+      flex: 1; text-align: center; border: none; background: transparent; 
+      font-size: 1.5rem; font-weight: 800; color: var(--text); 
+      outline: none; width: 4rem; padding: 0;
+    }
 
-    /* 按钮组优化 */
-    .cta-group { display: flex; gap: 1rem; margin-top: auto; }
+    /* 双报价行 */
+    .quote-row { display: flex; justify-content: space-between; margin-bottom: 1rem; gap: 1rem; }
+    .quote-box { font-size: 1.25rem; font-weight: 800; font-family: monospace; letter-spacing: -0.5px; }
+    .quote-box.bid { color: #2563eb; } /* 蓝色系 */
+    .quote-box.ask { color: #2563eb; text-align: right; }
+
+    /* 通用简易表单行 (价格, 期限) */
+    .form-row-simple { 
+      display: flex; justify-content: space-between; align-items: center; 
+      padding: 0.75rem 0; border-bottom: 1px solid #f3f4f6; 
+      font-size: 0.9375rem;
+    }
+    .form-row-simple label { color: var(--muted); font-weight: 600; }
+    .form-row-simple input { 
+      text-align: right; border: none; outline: none; background: transparent; 
+      font-size: 1rem; font-weight: 700; color: var(--text); width: 60%;
+    }
+    .form-row-simple .static-val { font-weight: 700; color: var(--text); }
+
+    /* 彩色输入行 (止盈/止损) */
+    .form-row-colored { 
+      display: flex; justify-content: space-between; align-items: center; 
+      padding: 0 1rem; height: 3rem; border-radius: 0.5rem; 
+      margin-bottom: 0.5rem; 
+    }
+    .form-row-colored.green { background: #ecfdf5; }
+    .form-row-colored.green label { color: #059669; }
+    .form-row-colored.green input { color: #059669; }
+    
+    .form-row-colored.red { background: #fef2f2; }
+    .form-row-colored.red label { color: #dc2626; }
+    .form-row-colored.red input { color: #dc2626; }
+
+    .form-row-colored label { font-weight: 700; font-size: 0.9375rem; }
+    .form-row-colored .input-wrap { display: flex; align-items: center; gap: 0.5rem; flex: 1; justify-content: flex-end; }
+    .form-row-colored input { 
+      background: transparent; border: none; outline: none; text-align: right; 
+      font-size: 1.125rem; font-weight: 800; width: 100%; 
+    }
+    .mini-add { 
+      width: 1.5rem; height: 1.5rem; border-radius: 50%; border: none; 
+      background: rgba(0,0,0,0.05); color: inherit; font-weight: 700; 
+      display: flex; align-items: center; justify-content: center; cursor: pointer; 
+    }
+
+    /* 按钮组 */
+    .cta-group { display: flex; gap: 1rem; margin-top: 1rem; }
     .cta { 
       flex: 1; border: none; border-radius: 0.75rem; 
-      height: 3.5rem; font-size: 1.125rem; font-weight: 800; color: #fff;
+      height: 3.25rem; font-size: 1rem; font-weight: 800; color: #fff;
       display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-      transition: transform 0.1s;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1); cursor: pointer;
     }
     .cta:active { transform: scale(0.98); }
-    .cta.buy { background: var(--green); box-shadow: 0 4px 12px rgba(14, 203, 129, 0.2); }
-    .cta.sell { background: var(--red); box-shadow: 0 4px 12px rgba(246, 70, 93, 0.2); }
+    .cta.buy { background: var(--green); box-shadow: 0 4px 12px rgba(14, 203, 129, 0.25); }
+    .cta.sell { background: var(--red); box-shadow: 0 4px 12px rgba(246, 70, 93, 0.25); }
 
     /* 按钮组 */
     .cta-group { display: flex; gap: 0.75rem; margin-top: 0.625rem;}
@@ -1539,53 +1578,81 @@ HTML_TEMPLATE = r"""<!doctype html>
 
       <div class="col-right">
         <div class="card trade-card" style="height: 100%;">
-          <!-- 1. 顶部：模式/杠杆/余额 -->
+          <!-- Header -->
           <div class="trade-header">
             <div class="trade-badges">
               <div class="chip primary">全仓模式</div>
               <div class="chip" id="btnLev" onclick="$('levMask').style.display='flex'">杠杆 20x ▼</div>
             </div>
             <div class="trade-balance">
-              <span class="label">可用:</span>
-              <span class="value" id="formAvail">--</span>
+              可用: <span class="value" id="formAvail">--</span>
             </div>
           </div>
 
-          <!-- 2. 交易类型 -->
-          <div class="form-section">
-            <div class="form-row select-row" onclick="$('orderTypeMask').style.display='flex'">
-              <label>交易类型</label>
-              <div class="value-text"><span id="orderTypeText">限价止盈止损</span> ▼</div>
-            </div>
-          </div>
-          
-          <!-- 3. 动态表单区域 (TP/SL/Price) -->
-          <div id="dynamicFormArea"></div>
-
-          <!-- 4. 点差 (占位展示) -->
-          <div class="form-row readonly">
-            <label>点差</label>
-            <div class="value-text" style="font-family:monospace;">浮动</div>
+          <!-- 交易类型 -->
+          <div class="trade-type-title" onclick="$('orderTypeMask').style.display='flex'">
+            <span id="orderTypeText">市场执行</span>
+            <span style="font-size:0.8rem">▼</span>
           </div>
 
-          <!-- 5. 交易数量 (Lots) -->
-          <div class="volume-section">
-            <div class="volume-header">
-              <label>交易数量 (手数 Lots)</label>
-              <div class="volume-display">
-                <span id="calcLotsText" class="highlight-lots">0.00</span> 手
-              </div>
-            </div>
-            <div class="range-wrap" style="margin:0; padding:0;">
-              <input type="range" id="marginSlider" min="0" max="100" step="1" value="10">
-            </div>
-            <div class="volume-sub">
-              <span>保证金: <span id="pctText">10</span> USD</span>
-              <span>(占比 <span id="marginPercentText">0</span>%)</span>
-            </div>
+          <!-- 交易量 (Stepper) -->
+          <div class="stepper-row">
+             <button class="step-btn" onclick="adjustLots(-0.1)">-0.1</button>
+             <button class="step-btn" onclick="adjustLots(-0.01)">-0.01</button>
+             <input type="number" id="inpLots" value="0.01" step="0.01" oninput="onLotsChange(this)">
+             <button class="step-btn" onclick="adjustLots(0.01)">+0.01</button>
+             <button class="step-btn" onclick="adjustLots(0.1)">+0.1</button>
           </div>
 
-          <!-- 6. 按钮组 -->
+          <!-- 报价展示 (Bid/Ask) -->
+          <div class="quote-row">
+             <div class="quote-box bid" id="quoteBid">--</div>
+             <div class="quote-box ask" id="quoteAsk">--</div>
+          </div>
+
+          <!-- 价格 (Market/Limit) -->
+          <div class="form-row-simple" id="row-price">
+             <label>价格:</label>
+             <div id="price-display-area" style="flex:1; text-align:right;">
+                <span id="price-float-text" class="static-val">浮动</span>
+                <input type="number" id="inpPrice" style="display:none; width:100%;" placeholder="输入价格">
+             </div>
+          </div>
+
+          <!-- 止盈 -->
+          <div class="form-row-colored green">
+             <label>止盈触发价:</label>
+             <div class="input-wrap">
+                <input type="number" id="inpTp" placeholder="0.00">
+                <button class="mini-add" onclick="adjustPrice('inpTp', 1)">+</button>
+             </div>
+          </div>
+
+          <!-- 止损 -->
+          <div class="form-row-colored red">
+             <label>止损触发价:</label>
+             <div class="input-wrap">
+                <input type="number" id="inpSl" placeholder="0.00">
+                <button class="mini-add" onclick="adjustPrice('inpSl', -1)">+</button>
+             </div>
+          </div>
+
+          <!-- 期限 -->
+          <div class="form-row-simple">
+             <label>期限:</label>
+             <input type="number" id="inpTTL" value="10" placeholder="分钟">
+          </div>
+
+          <!-- 隐藏的辅助字段容器 (保留逻辑兼容) -->
+          <div style="display:none">
+             <div id="dynamicFormArea"></div> <!-- 旧容器占位，防止JS报错，实际上已移出 -->
+             <span id="pctText"></span>
+             <span id="calcLotsText"></span>
+             <span id="marginPercentText"></span>
+             <input type="range" id="marginSlider">
+          </div>
+
+          <!-- 按钮组 -->
           <div class="cta-group">
             <button class="cta buy" onclick="initiateOrder('BUY')">买入 / 做多</button>
             <button class="cta sell" onclick="initiateOrder('SELL')">卖出 / 做空</button>
@@ -1839,322 +1906,141 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     // 暴露全局函数供 HTML 调用
     window.updateCalculations = function() {
-      const { marginPct, equity, availMargin } = window.quantState; // 移除 leverage, price 从 state 取
-      // marginPct 这里实际存的是用户选择的“投入保证金金额 USD”
-      const usedMargin = marginPct; 
+      const { availMargin } = window.quantState;
+      // 核心变更：Lots 不再由保证金反推，而是直接取自输入框 (或 window.quantState.lots)
+      // 如果输入框存在，以输入框为准；否则以 quantState 为准
       
-      // 更新滑轮最大值为可用余额
-      const marginSlider = $('marginSlider');
-      if(marginSlider) {
-          const maxVal = Math.floor(availMargin > 0 ? availMargin : 100);
-          if(parseFloat(marginSlider.max) !== maxVal) {
-              marginSlider.max = maxVal;
-          }
-      }
-
-      // 获取当前品种规则 (从 refreshData 注入到 quantState)
-      const rule = window.quantState.symbolRules || {};
-      // 核心：优先使用后端下发的杠杆/保证金规则，忽略前端滑块的 leverage
-      const marginPerLot = rule.margin_per_lot_usd || 0;
-      const pointVal = rule.point_val_usd || 0;
+      const lotsInput = $('inpLots');
+      let currentLots = 0.01;
       
-      let calculatedLots = 0;
-      if (marginPerLot > 0) {
-          // Lots = 投入金额 / 单手保证金
-          // 注意：后端单手保证金是按当前价格算的，这里直接除即可估算
-          calculatedLots = usedMargin / marginPerLot;
-      }
-      
-      // 简单的手数计算保护
-      if (!isFinite(calculatedLots) || calculatedLots < 0) calculatedLots = 0;
-      
-      // [修复]：不再向下取整，改为保留2位小数，且有最小兜底
-      // 如果算出来大于0但小于0.01，强制给0.01，让用户能尝试下单
-      if (calculatedLots > 0 && calculatedLots < 0.01) {
-          calculatedLots = 0.01;
+      if(lotsInput) {
+          currentLots = parseFloat(lotsInput.value) || 0;
       } else {
-          // 使用 round 而不是 floor，避免 0.009 被截断
-          calculatedLots = Math.round(calculatedLots * 100) / 100;
+          currentLots = window.quantState.lots || 0.01;
       }
       
-      window.quantState.lots = calculatedLots;
+      if(currentLots < 0.01) currentLots = 0.01;
+      window.quantState.lots = currentLots;
 
-      // 更新 UI 显示
-      $('pctText').innerText = usedMargin; // 显示使用保证金金额
+      // 获取当前品种规则
+      const rule = window.quantState.symbolRules || {};
+      const marginPerLot = rule.margin_per_lot_usd || 0;
       
-      // 显示投入金额占可用余额的百分比
-      let percentage = 0;
-      if (availMargin > 0) {
-          percentage = (usedMargin / availMargin) * 100;
-      }
-      $('marginPercentText').innerText = percentage.toFixed(0);
+      // 计算占用保证金
+      // Margin = Lots * MarginPerLot
+      const usedMargin = currentLots * marginPerLot;
       
-      // 更新独立的手数显示 (修复之前的覆盖 bug)
-      const lotsEl = $('calcLotsText');
-      if(lotsEl) lotsEl.innerText = calculatedLots.toFixed(2);
-
-      $('calcMargin').innerText = usedMargin.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
+      // 更新 UI 显示 (这里主要是为了兼容旧逻辑的 ID，实际上新 UI 可能不显示这些)
+      if($('pctText')) $('pctText').innerText = usedMargin.toLocaleString('en-US', {minimumFractionDigits:2});
       
-      // 显示名义价值 (Notional Value = Lots * ContractSize * Price)
-      const contractSize = rule.spec ? rule.spec.size : 100; // 默认100
-      const notionalVal = calculatedLots * contractSize * window.quantState.price;
-      $('calcNotional').innerText = notionalVal.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
+      // 计算名义价值
+      const contractSize = rule.spec ? rule.spec.size : 100; 
+      const notionalVal = currentLots * contractSize * window.quantState.price;
+      if($('calcNotional')) $('calcNotional').innerText = notionalVal.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
       
-      // 显示每点波动价值 (Total Point Value)
-      // 用户要求：基于合约手数杠杆*手数对每点波动 (数值非百分比)
-      // 实际上后端返回的 pointVal (margin_per_lot_usd/leverage/...) 并不一定是 "每点价值"
-      // 正确的每点价值 (Value per Point) = ContractSize * PointSize * (QuoteRate if needed)
-      // 而 Total Point Value = Lots * ContractSize * PointSize * (QuoteRate)
-      // 后端 rule.point_val_usd 通常是 "单手每点价值" (ContractSize * PointSize)
-      // 如果后端 point_val_usd 不准，我们自己算:
+      // 计算每点波动价值 (每变动 1.0 价格)
+      const valPerPriceUnit = currentLots * contractSize;
+      if($('calcPpVal')) $('calcPpVal').innerText = valPerPriceUnit.toFixed(2) + " USD";
       
-      let pointSize = 0.01; 
-      if (rule.spec && rule.spec.type === 'forex') pointSize = 0.00001;
-      if (rule.spec && rule.spec.type === 'index') pointSize = 1.0;
-      if (rule.spec && rule.spec.type === 'crypto') pointSize = 0.01;
-      // 贵金属 XAUUSD point=0.01
-      
-      // 重新计算单手每点价值 (USD)
-      // 用户描述公式：一首黄金为500000（开仓价格*开仓合约手数*杠杆）/ 黄金实时价格 即为每点波动价值
-      // 注意：这里的描述可能有点混淆。通常每点波动价值 (Tick Value) = ContractSize * PointSize
-      // 但如果是以报价货币计价 (如 USD)，通常就是这个公式。
-      // 用户提到的公式：(OpenPrice * ContractSize * Leverage) / CurrentPrice
-      // 这看起来更像是计算保证金的某种变体？或者是基于名义价值反推？
-      // 让我们仔细分析用户的例子：
-      // "比如黄金5000元；一首黄金为500000（开仓价格*开仓合约手数*杠杆）" -> 这里 5000 * 100 * 1 = 500,000 ? 这里的杠杆是 1 吗？如果是 500 倍杠杆，那名义价值是 5000 * 100 = 500,000。
-      // "/ 黄金实时价格即为每点波动价值" -> 500,000 / 5000 = 100。
-      // 100 是什么？是每点价值吗？XAUUSD Point=0.01。每点价值通常是 1 USD (100 * 0.01)。
-      // 如果结果是 100，那应该是每 1 美元波动的价值 (100 * 1)。
-      
-      // 用户的描述可能意指：每变动 1 个单位价格 (如 1 USD) 的价值。
-      // 而不是 Point (0.01 USD)。
-      // 但界面标签是 "每点波动"，通常指 Point。
-      
-      // 让我们再看公式：(Price * Size * Lev) / Price = Size * Lev
-      // 如果 Lev=500, Size=100, 那结果是 50000。这显然太大了。
-      
-      // 也许用户意思是：(Price * Size) / Price = Size。
-      // 也许用户想表达的是：每变动 1% 的价值？
-      
-      // 让我们严格按用户文字实现：
-      // "一首黄金为500000（开仓价格*开仓合约手数*杠杆）/ 黄金实时价格 即为每点波动价值"
-      // 假设：开仓价 5000, 合约 100, 杠杆 ? 
-      // 如果 "一首黄金为 500000"，那可能是 名义价值 = 5000 * 100 = 500,000 (无杠杆?) 或者包含杠杆的名义价值？
-      // 通常名义价值 (Notional) = Price * Size * Lots。
-      // 如果用户说的是 "名义价值 / 实时价格"，那结果就是 Size * Lots。
-      // Size * Lots * PointSize = 每点价值。
-      
-      // 现在的代码是：
-      // const valuePerPoint = contractSize * pointSize;
-      // const totalPointVal = valuePerPoint * calculatedLots;
-      // 这就是标准的每点价值计算。
-      
-      // 用户可能觉得之前算的太小 (0.71 USD)，因为之前是按照 0.71 手算的。
-      // 如果 0.71 手，每点价值应该是 0.71 USD (XAUUSD)。
-      // 难道用户认为应该是 71 USD？那意味着他认为 Point 是 1.0 而不是 0.01。
-      
-      // 既然用户给出了明确公式，我们尝试理解：
-      // "500000 ... / 黄金实时价格" -> 500000 / 5000 = 100。
-      // 这正好是 ContractSize (100)。
-      // 所以每点波动价值 = 100 ?
-      // 如果 Point=0.01，那 100 对应的是 1 USD 的波动 (100 points)。
-      // 所以用户可能把 "每点" 理解为 "每 1 美元价格波动"。
-      
-      // 但界面上写的是 "每点波动"，通常对应 MT4 的 Point。
-      // 不过为了满足用户，我们按他的公式来：
-      // 结果 = (名义价值 * 杠杆) / 当前价格 ? 不，名义价值本身就包含了价格。
-      // 用户公式核心：(Price * Size * Lots * Lev) / Price = Size * Lots * Lev
-      // 如果 Lev=500，那结果巨大。
-      
-      // 让我们再次阅读："比如黄金5000元；一首黄金为500000（开仓价格*开仓合约手数*杠杆）"
-      // 这里 5000 * 100 = 500,000。这里没乘杠杆，或者杠杆是1？
-      // 如果乘了 500，那就是 2.5 亿。
-      // 所以 "500000" 应该是 名义价值 (Notional Value)。
-      // 然后 "/ 黄金实时价格" -> 500,000 / 5000 = 100。
-      // 这里的 100 就是 1 手的 Contract Size。
-      // 所以用户定义的 "每点波动" = ContractSize * Lots。
-      // 这实际上是 "每变动 1.0 报价单位的盈亏"。
-      
-      // 既然用户强调 "数值非百分比"，我们按此逻辑：
-      // 每点波动 (用户定义) = (Notional * Leverage) / Price ... 等等，用户括号里写了 *杠杆。
-      // 如果真乘杠杆，数值会非常大。
-      // 假设用户笔误，其实是想算每 1 美元波动的价值。
-      
-      // 让我们尝试实现：
-      // TotalPointVal = (Notional * Leverage) / Price * PointSize
-      // 如果按用户公式：(5000 * 100 * 500) / 5000 = 50000。
-      // 50000 * 0.01 = 500 USD。
-      // 这意味着每点波动 500 USD？这相当于 500 手。
-      
-      // 也许用户是想说：保证金 * 杠杆 = 名义价值。
-      // 然后 名义价值 / 价格 = 数量 (Size * Lots)。
-      // 数量 * PointSize = 每点价值。
-      
-      // 让我们暂时忽略 "杠杆" 这个词，仅按 "500000 / 5000 = 100" 理解。
-      // 这就是 Size * Lots。
-      // 如果 PointSize = 0.01，那标准每点价值是 Size * Lots * 0.01 = 1。
-      // 用户算出来是 100。相差 100 倍。
-      // 这意味着用户认为 "每点" = 1.0 USD 价格变动。
-      
-      // 既然用户要求 "计算当前设置下每点波动基于...对每点波动"，
-      // 我们保留原有的 PointSize 逻辑，但尝试适配用户的数值感。
-      // 如果用户想要的是 "每变动 1 美元的价值"，那我们就显示这个。
-      // 但标签是 "每点"，我们最好显示 "每点 (0.01) 价值"。
-      
-      // 决定：严格执行用户给的文字公式，看看结果。
-      // 公式：(OpenPrice * Size * Lots * Leverage) / CurrentPrice
-      // = Size * Lots * Leverage (假设 Open ~= Current)
-      // 如果 Lev=500，Lots=1，Size=100 -> 50000。
-      // 这完全不合理。
-      
-      // 重新解读："一首黄金为500000" -> 可能是 100 oz * 5000 USD/oz = 500,000 USD。这是合约价值。
-      // "(开仓价格*开仓合约手数*杠杆)" -> 这里的杠杆可能用户理解错了，或者是"合约乘数"？
-      // 忽略括号里的杠杆。
-      // 500,000 / 5000 = 100。
-      // 即：名义价值 / 价格 = 持仓量 (盎司/单位数)。
-      // 结论：用户定义的 "每点波动" 其实是 "每变动 1 单位价格的盈亏"。
-      // 也就是 Delta = 1.0 时的 PnL。
-      
-      // 我们把 PointSize 设为 1.0 (即每变动 1 美元) 来计算这个值展示给用户？
-      // 或者保持 PointSize，但按用户公式算？
-      
-      // 考虑到用户之前说 "0.71 USD" (0.71手 * 100 * 0.01 = 0.71) 是 "过小的数值"，
-      // 他可能期望看到 71 USD (即价格变动 1 美元的盈亏)。
-      
-      // 修正逻辑：
-      // 显示 "每 1 美元波动价值" (Per 1.0 Price Move)
-      // Value = Lots * ContractSize
-      
-      const totalPointVal = calculatedLots * contractSize;
-      $('calcPpVal').innerText = totalPointVal.toFixed(2) + " USD / 1.0 Price";
-      
-      // 但还要用于强平计算。强平计算依赖 PointValue。
-      // 如果我们改了 totalPointVal 的定义，强平计算也要改。
-      // 强平计算：
-      // 距离 = Equity / (Value per 1.0 Price)
-      // 强平价 = Price - 距离
-      
-      // 这样逻辑是自洽的。
-      
-      // 唯一问题：用户文字里提到的 "杠杆"。
-      // 如果加上杠杆，数值会大 500 倍。
-      // 假设用户对 "杠杆" 的理解有误，或者是想表达 "名义价值"。
-      // 我们采用 "名义价值 / 价格" 这个核心逻辑，即 Lots * Size。
-      
-      // 修改代码：
-      // calcPpVal 显示为： Lots * Size (即每变动 1.0 价格的价值)
-      // calcLiq 使用这个值计算距离。
-      
-      // 总波动价值 (每 1.0 价格变动)
-      const valPerPriceUnit = calculatedLots * contractSize;
-      $('calcPpVal').innerText = valPerPriceUnit.toFixed(2) + " USD"; // 显示纯数值
-      
-      // 止损估算 (基于开仓名义价值)
-      // 用户要求：固定百分比止损额度按照合约手数杠杆*手数乘以固定百分比计算
-      // 即 Notional Value * Percentage
-      // 注意：这里的 Percentage 是止损比例 (如 2%)，不是保证金比例
-      [2, 3, 5, 8, 10].forEach(pct => {
-        const el = $(`sl_${pct}`);
-        if(el) {
-            // 计算止损金额 = 名义价值 * 百分比
-            const slAmount = notionalVal * (pct / 100.0);
-            el.innerText = slAmount.toLocaleString('en-US', {minimumFractionDigits:2}) + " USD";
-        }
-      });
-      
-      // 预估强平价格 (Liq Price)
-      // 用户要求：强平价格计算也是同理 (基于名义价值?)
-      // 通常强平是当 净值 < 维持保证金 时触发
-      // 维持保证金通常是占用保证金的一定比例 (如 50% 或 100%)
-      // 简化估算：当亏损额 = 账户净值 - 维持保证金 时强平
-      // 假设全仓模式，亏损额 = 账户净值 (最坏情况)
-      // 距离点数 = 可承受亏损额 / 每点价值
-      // 强平价 = 当前价 +/- 距离点数 * PointSize
-      
-      // 这里用户说 "强平价格计算也是同理"，可能是指基于名义价值反推？
-      // 假设是指：当亏损达到名义价值的某个比例时强平？这不太常见。
-      // 我们还是按标准逻辑：Equity / TotalPointValue = 距离点数
-      // 距离点数 * PointSize = 价格距离
-      
-      // 但为了响应用户 "基于合约手数杠杆*手数对每点波动（数值非百分比）盈亏数据分析"
-      // 我们可以显示：账户净值能扛多少点
-      
+      // 计算强平价格
       let liqPrice = 0;
-       if (valPerPriceUnit > 0 && equity > 0) {
-           // 可抗价格变动 = 净值 / 每变动 1.0 价格的价值
-           // 例如：净值 1000 USD, 1手黄金 (Size 100) -> valPerPriceUnit = 100 USD
-           // 可抗价格变动 = 1000 / 100 = 10 USD
-           // 强平价 = 2350 - 10 = 2340
-           
+      const equity = window.quantState.equity || 0;
+      if (valPerPriceUnit > 0 && equity > 0) {
            const priceDist = equity / valPerPriceUnit;
-           
-           // 假设做多，强平价 = 当前价 - 距离
-           // 假设做空，强平价 = 当前价 + 距离
-           // 这里默认显示做多的强平价 (更直观)
            liqPrice = Math.max(0, window.quantState.price - priceDist);
-       }
-      
-      // 用户提到 "预估强平价格基于...计算"，可能只是想确认计算逻辑正确
-      // 既然前端不知道方向，显示具体价格会误导 (做多做空不一样)
-      // 我们可以显示 "当前价 +/- 距离"
-      // 但为了保持 UI 简洁，且之前显示的是 "0.18 手" 这种错误数据，
-      // 我们现在改为显示计算出的 强平价格 (假设做多)
-      $('calcLiq').innerText = liqPrice > 0 ? liqPrice.toFixed(2) : "0.00";
-      
-      // (移除之前错误的 marginPercentText 覆盖逻辑)
+      }
+      if($('calcLiq')) $('calcLiq').innerText = liqPrice > 0 ? liqPrice.toFixed(2) : "0.00";
+    };
+
+    // 新增：调整手数
+    window.adjustLots = function(delta) {
+        const input = $('inpLots');
+        if(!input) return;
+        let val = parseFloat(input.value) || 0;
+        val += delta;
+        if(val < 0.01) val = 0.01;
+        input.value = parseFloat(val.toFixed(2));
+        window.onLotsChange(input);
+    };
+
+    // 新增：手数变更回调
+    window.onLotsChange = function(el) {
+        let val = parseFloat(el.value);
+        if(isNaN(val) || val < 0) val = 0.01;
+        window.quantState.lots = val;
+        window.updateCalculations();
+    };
+    
+    // 新增：调整价格 (TP/SL)
+    window.adjustPrice = function(id, delta) {
+        const input = $(id);
+        if(!input) return;
+        let val = parseFloat(input.value);
+        if(isNaN(val)) val = window.quantState.price || 0;
+        
+        // 根据品种精度调整，这里简化为 1.0 或 0.01
+        // 最好根据当前价格精度。假设 XAUUSD 精度 2，其他 4/5
+        // 简单处理：如果是整数或大数，步长 1；小数步长 0.01? 
+        // 用户代码里是 delta=1/-1，说明是整数微调。
+        // 但对于外汇 1.0850，+1 变成 2.0850 太大了。
+        // 既然用户要求 "微调按钮"，我们根据价格大小动态决定步长
+        let step = 1;
+        if(val < 10) step = 0.0001;
+        else if(val < 1000) step = 0.01;
+        
+        val += (delta * step);
+        if(val < 0) val = 0;
+        
+        // 格式化
+        const digits = (step < 0.01) ? 4 : 2;
+        input.value = val.toFixed(digits);
     };
 
     window.setOrderType = function(typeCode, typeName) {
       window.quantState.orderType = typeCode;
-      $('orderTypeText').innerText = typeName;
+      if($('orderTypeText')) $('orderTypeText').innerText = typeName;
       $('orderTypeMask').style.display = 'none';
       
+      // 更新选中状态
       document.querySelectorAll('#orderTypeMask .select-item').forEach(el => {
         el.classList.remove('active');
         if(el.innerText === typeName) el.classList.add('active');
       });
 
-      const area = $('dynamicFormArea');
-      const renderInput = (lbl, placeholder, id) => `
-        <div class="form-row" style="cursor:text">
-          <label>${lbl}</label><input type="text" inputmode="decimal" id="${id}" placeholder="${placeholder}">
-        </div>`;
+      // 切换价格行显示
+      const rowPrice = $('row-price');
+      const floatText = $('price-float-text');
+      const inpPrice = $('inpPrice');
       
-      let html = '';
-      
-      // 顺序调整为: 止盈 -> 止损 -> 触发价 (如果有)
-      if(typeCode === 'market') { /* 无需额外输入 */ } 
-      else if(typeCode === 'market_tpsl') { 
-          html += renderInput('止盈触发价', '0.00', 'inpTp'); 
-          html += renderInput('止损触发价', '0.00', 'inpSl'); 
-      } 
-      else if(typeCode === 'limit') { 
-          html += renderInput('交易触发价', '0.00', 'inpPrice'); 
+      if(rowPrice && floatText && inpPrice) {
+          if(typeCode.includes('limit')) {
+              // 限价模式：显示输入框
+              floatText.style.display = 'none';
+              inpPrice.style.display = 'block';
+              if(!inpPrice.value) inpPrice.value = window.quantState.price; // 预填当前价
+          } else {
+              // 市场模式：显示浮动
+              floatText.style.display = 'inline';
+              inpPrice.style.display = 'none';
+          }
       }
-      else if(typeCode === 'limit_tpsl') { 
-          html += renderInput('止盈触发价', '0.00', 'inpTp'); 
-          html += renderInput('止损触发价', '0.00', 'inpSl'); 
-          html += renderInput('交易触发价', '0.00', 'inpPrice'); 
-      }
-      
-      // TTL 保持在最后
-      html += renderInput('有效期 (分)', '10', 'inpTTL');
-      area.innerHTML = html;
+    };
+    
+    // 重写 getFormInputs 以适配新 ID
+    window.getFormInputs = function() {
+        const data = {};
+        // 显式获取新 ID 的值
+        if($('inpPrice')) data['inpPrice'] = $('inpPrice').value;
+        if($('inpTp')) data['inpTp'] = $('inpTp').value;
+        if($('inpSl')) data['inpSl'] = $('inpSl').value;
+        if($('inpTTL')) data['inpTTL'] = $('inpTTL').value;
+        return data;
     };
 
     window.validateFormInputs = function() {
-      const area = $('dynamicFormArea');
-      const inputs = area.querySelectorAll('input');
-      const labels = area.querySelectorAll('label');
-      const errors = [];
-
-      inputs.forEach((input, index) => {
-        // 对于可选字段可以放宽限制，这里暂时保持非空检查
-        // 实际交易中 TP/SL 可能是可选的
-      });
-      return errors;
+      // 简化校验
+      return [];
     };
-
     window.initiateOrder = function(side) {
       // 简单校验
       if(window.quantState.lots <= 0) {
@@ -2626,6 +2512,11 @@ HTML_TEMPLATE = r"""<!doctype html>
                     } else {
                         window.quantState.price = quote.bid;
                         $('midPriceText').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
+                        
+                        // 更新右侧面板双报价
+                        if($('quoteBid')) $('quoteBid').innerText = fmtNum(quote.bid, currentSym === 'XAUUSD' ? 2 : 4);
+                        if($('quoteAsk')) $('quoteAsk').innerText = fmtNum(quote.ask, currentSym === 'XAUUSD' ? 2 : 4);
+                        
                         priceUpdated = true;
                         
                         // 更新信号灯时间戳 (1.5s 阈值)
