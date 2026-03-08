@@ -1580,11 +1580,13 @@ HTML_TEMPLATE = r"""<!doctype html>
         <div class="card trade-card" style="height: 100%;">
           <!-- Header -->
           <div class="trade-header">
-            <div class="trade-badges">
-              <div class="chip primary">全仓模式</div>
-              <div class="chip" id="btnLev" onclick="$('levMask').style.display='flex'">杠杆 20x ▼</div>
-            </div>
-            <div class="trade-balance">
+            <!-- 移除 Badge，只保留普通文本或省略 -->
+            <!-- 如果需要保留功能入口，可以用更隐蔽的方式 -->
+            <!-- 这里直接移除视觉干扰，保留功能入口但样式简化 -->
+            <!-- 或者完全按照用户要求“这个标志可删掉了” -->
+            <!-- 用户可能指全仓模式和杠杆的 badge -->
+            <!-- 我们保留余额显示，移除左侧 badge -->
+            <div class="trade-balance" style="width: 100%; text-align: right;">
               可用: <span class="value" id="formAvail">--</span>
             </div>
           </div>
@@ -1640,7 +1642,10 @@ HTML_TEMPLATE = r"""<!doctype html>
           <!-- 期限 -->
           <div class="form-row-simple">
              <label>期限:</label>
-             <input type="number" id="inpTTL" value="10" placeholder="分钟">
+             <div style="flex:1; text-align:right; display:flex; align-items:center; justify-content:flex-end;">
+                 <input type="number" id="inpTTL" value="10" placeholder="10" style="width: 3rem; text-align:right;" oninput="updateTTLDisplay(this)">
+                 <span id="ttlUnit" style="margin-left:0.25rem; font-weight:700; color:var(--text);">分钟</span>
+             </div>
           </div>
 
           <!-- 隐藏的辅助字段容器 (保留逻辑兼容) -->
@@ -1994,6 +1999,25 @@ HTML_TEMPLATE = r"""<!doctype html>
         // 格式化
         const digits = (step < 0.01) ? 4 : 2;
         input.value = val.toFixed(digits);
+    };
+
+    // 新增：TTL 显示格式化
+    window.updateTTLDisplay = function(el) {
+        const val = parseInt(el.value) || 0;
+        const unitEl = $('ttlUnit');
+        if(!unitEl) return;
+        
+        if(val >= 60) {
+            const h = Math.floor(val / 60);
+            const m = val % 60;
+            if(m === 0) {
+                unitEl.innerText = `(${h} 小时)`;
+            } else {
+                unitEl.innerText = `(${h} 小时 ${m} 分)`;
+            }
+        } else {
+            unitEl.innerText = "分钟";
+        }
     };
 
     window.setOrderType = function(typeCode, typeName) {
