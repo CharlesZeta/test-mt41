@@ -114,14 +114,17 @@ cleanup_thread.start()
 
 # ==================== 时间限制函数 ====================
 def is_restricted_time():
-    """判断当前时间是否处于限制时段（0:00 - 5:00 禁止交易）"""
-    now = datetime.now()
-    h = now.hour
-    # 规则：只有 5:00 - 24:00 允许交易 (即 [5, 24))
-    # 禁止时段: 0, 1, 2, 3, 4 点
-    if 0 <= h < 5:
-        return True
+    """判断当前时间是否处于限制时段（功能已关闭）"""
+    # 暂时关闭时间限制，允许全天交易
     return False
+    
+    # now = datetime.now()
+    # h = now.hour
+    # # 规则：只有 5:00 - 24:00 允许交易 (即 [5, 24))
+    # # 禁止时段: 0, 1, 2, 3, 4 点
+    # if 0 <= h < 5:
+    #     return True
+    # return False
 
 # ==================== 工具函数 ====================
 def generate_nonce():
@@ -1249,6 +1252,57 @@ HTML_TEMPLATE = r"""<!doctype html>
     input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 0.375rem; background: linear-gradient(to right, var(--text) 0%, var(--text) var(--track-fill, 10%), var(--line) var(--track-fill, 10%), var(--line) 100%); border-radius: 3px; }
     input[type=range]::-webkit-slider-thumb { height: 1.5rem; width: 1.5rem; border-radius: 50%; background: #fff; border: 4px solid var(--text); -webkit-appearance: none; margin-top: -0.5625rem; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
 
+    /* ========== 交易面板新样式 (图1/图3风格) ========== */
+    .trade-card { padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
+    
+    .trade-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; }
+    .trade-badges { display: flex; gap: 0.5rem; }
+    .trade-balance { font-size: 0.875rem; font-weight: 600; color: var(--muted); text-align: right; }
+    .trade-balance .value { color: var(--text); font-weight: 800; font-family: monospace; }
+
+    /* 表单行优化 */
+    .form-row {
+      display: flex; justify-content: space-between; align-items: center;
+      background: #f9fafb; /* 更轻的背景 */
+      border-radius: 0.75rem; 
+      padding: 0 1rem;
+      margin-bottom: 0.75rem;
+      min-height: 3.5rem;
+      border: 1px solid transparent;
+      transition: all 0.2s;
+    }
+    .form-row:active { background: #f3f4f6; }
+    .form-row label { color: var(--muted); font-size: 0.9375rem; font-weight: 600; }
+    .form-row input { text-align: right; font-size: 1.125rem; font-weight: 700; color: var(--text); background: transparent; width: 100%; border: none; outline: none; }
+    .form-row .value-text { font-size: 1rem; font-weight: 700; color: var(--text); }
+    
+    /* 只读/展示行 */
+    .form-row.readonly { background: transparent; padding: 0 0.5rem; min-height: 2.5rem; margin-bottom: 0.5rem; border: none; }
+    .form-row.readonly label { font-size: 0.875rem; }
+    .form-row.readonly .value-text { font-size: 0.9375rem; }
+
+    /* 交易数量区域 */
+    .volume-section { margin-top: 0.5rem; margin-bottom: 1rem; }
+    .volume-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.5rem; }
+    .volume-header label { font-size: 0.875rem; font-weight: 700; color: var(--muted); }
+    .volume-display { font-size: 0.875rem; font-weight: 700; color: var(--text); }
+    .highlight-lots { font-size: 1.5rem; font-weight: 800; color: var(--text); margin-right: 2px; }
+    
+    .volume-sub { display: flex; justify-content: space-between; margin-top: 0.5rem; font-size: 0.75rem; color: var(--muted); }
+
+    /* 按钮组优化 */
+    .cta-group { display: flex; gap: 1rem; margin-top: auto; }
+    .cta { 
+      flex: 1; border: none; border-radius: 0.75rem; 
+      height: 3.5rem; font-size: 1.125rem; font-weight: 800; color: #fff;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      transition: transform 0.1s;
+    }
+    .cta:active { transform: scale(0.98); }
+    .cta.buy { background: var(--green); box-shadow: 0 4px 12px rgba(14, 203, 129, 0.2); }
+    .cta.sell { background: var(--red); box-shadow: 0 4px 12px rgba(246, 70, 93, 0.2); }
+
     /* 按钮组 */
     .cta-group { display: flex; gap: 0.75rem; margin-top: 0.625rem;}
     .cta { 
@@ -1484,40 +1538,54 @@ HTML_TEMPLATE = r"""<!doctype html>
       </div>
 
       <div class="col-right">
-        <div class="card" style="height: 100%; display: flex; flex-direction: column;">
-          <div class="form-header">
-            <div class="chips">
+        <div class="card trade-card" style="height: 100%;">
+          <!-- 1. 顶部：模式/杠杆/余额 -->
+          <div class="trade-header">
+            <div class="trade-badges">
               <div class="chip primary">全仓模式</div>
               <div class="chip" id="btnLev" onclick="$('levMask').style.display='flex'">杠杆 20x ▼</div>
             </div>
-            <div style="color: var(--muted); font-size: 0.8125rem; font-weight: 600;">可用: <span style="color:var(--text);font-weight:800" id="formAvail">--</span></div>
+            <div class="trade-balance">
+              <span class="label">可用:</span>
+              <span class="value" id="formAvail">--</span>
+            </div>
           </div>
 
-          <div class="form-row" onclick="$('orderTypeMask').style.display='flex'">
-            <label>交易类型</label>
-            <div class="value-text"><span id="orderTypeText">限价止盈止损</span> ▼</div>
+          <!-- 2. 交易类型 -->
+          <div class="form-section">
+            <div class="form-row select-row" onclick="$('orderTypeMask').style.display='flex'">
+              <label>交易类型</label>
+              <div class="value-text"><span id="orderTypeText">限价止盈止损</span> ▼</div>
+            </div>
           </div>
           
+          <!-- 3. 动态表单区域 (TP/SL/Price) -->
           <div id="dynamicFormArea"></div>
 
-          <div class="range-wrap" style="margin-top: auto;">
-            <div class="range-header">
-              <span>投入保证金金额</span>
-              <div style="text-align: right;">
-                <span style="color: var(--text); font-size: 1rem;">
-                  <span id="pctText">10</span> USD 
-                </span>
-                <span style="display:block; font-size: 0.75rem; color: var(--text); font-weight: 800; margin-top: 2px;">
-                  ≈ <span id="calcLotsText">0.00</span> 手
-                </span>
-                <span style="font-size: 0.75rem; color: var(--muted);">
-                  (占余额 <span id="marginPercentText">0</span>%)
-                </span>
-              </div>
-            </div>
-            <input type="range" id="marginSlider" min="0" max="100" step="1" value="10">
+          <!-- 4. 点差 (占位展示) -->
+          <div class="form-row readonly">
+            <label>点差</label>
+            <div class="value-text" style="font-family:monospace;">浮动</div>
           </div>
 
+          <!-- 5. 交易数量 (Lots) -->
+          <div class="volume-section">
+            <div class="volume-header">
+              <label>交易数量 (手数 Lots)</label>
+              <div class="volume-display">
+                <span id="calcLotsText" class="highlight-lots">0.00</span> 手
+              </div>
+            </div>
+            <div class="range-wrap" style="margin:0; padding:0;">
+              <input type="range" id="marginSlider" min="0" max="100" step="1" value="10">
+            </div>
+            <div class="volume-sub">
+              <span>保证金: <span id="pctText">10</span> USD</span>
+              <span>(占比 <span id="marginPercentText">0</span>%)</span>
+            </div>
+          </div>
+
+          <!-- 6. 按钮组 -->
           <div class="cta-group">
             <button class="cta buy" onclick="initiateOrder('BUY')">买入 / 做多</button>
             <button class="cta sell" onclick="initiateOrder('SELL')">卖出 / 做空</button>
@@ -2053,12 +2121,24 @@ HTML_TEMPLATE = r"""<!doctype html>
         </div>`;
       
       let html = '';
-      if(typeCode === 'market') { /* 无需额外输入 */ } 
-      else if(typeCode === 'market_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); } 
-      else if(typeCode === 'limit') { html += renderInput('触发价', '0.00', 'inpPrice'); }
-      else if(typeCode === 'limit_tpsl') { html += renderInput('止盈价', '0.00', 'inpTp'); html += renderInput('止损价', '0.00', 'inpSl'); html += renderInput('触发价', '0.00', 'inpPrice'); }
       
-      html += renderInput('订单有效期 (分)', '默认 10 分钟', 'inpTTL');
+      // 顺序调整为: 止盈 -> 止损 -> 触发价 (如果有)
+      if(typeCode === 'market') { /* 无需额外输入 */ } 
+      else if(typeCode === 'market_tpsl') { 
+          html += renderInput('止盈触发价', '0.00', 'inpTp'); 
+          html += renderInput('止损触发价', '0.00', 'inpSl'); 
+      } 
+      else if(typeCode === 'limit') { 
+          html += renderInput('交易触发价', '0.00', 'inpPrice'); 
+      }
+      else if(typeCode === 'limit_tpsl') { 
+          html += renderInput('止盈触发价', '0.00', 'inpTp'); 
+          html += renderInput('止损触发价', '0.00', 'inpSl'); 
+          html += renderInput('交易触发价', '0.00', 'inpPrice'); 
+      }
+      
+      // TTL 保持在最后
+      html += renderInput('有效期 (分)', '10', 'inpTTL');
       area.innerHTML = html;
     };
 
@@ -2231,8 +2311,9 @@ HTML_TEMPLATE = r"""<!doctype html>
         const now = new Date();
         const h = now.getHours();
         
-        // 1. 基础时间限制 (0:00 - 5:00)
-        const isTimeRestricted = (h >= 0 && h < 5); 
+        // 1. 基础时间限制 (已关闭)
+        const isTimeRestricted = false; 
+        // const isTimeRestricted = (h >= 0 && h < 5); 
         
         // 2. 后端风控状态 (从 refreshData 获取)
         const riskStatus = window.quantState ? window.quantState.riskStatus : 'normal';
