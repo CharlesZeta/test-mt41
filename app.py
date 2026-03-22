@@ -1427,6 +1427,16 @@ HTML_TEMPLATE = r"""<!doctype html>
       'Commodities': [
         { name: 'USOUSD', desc: 'US Oil', price: 101.04, spread: 24, low: 96.46, high: 119.49 },
         { name: 'UKOUSD', desc: 'UK Brent Oil', price: 105.20, spread: 25, low: 100.00, high: 108.00 }
+      ],
+      'Crypto': [
+        { name: 'BTCUSD', desc: 'Bitcoin', price: 70594, spread: 50, low: 69000, high: 71000 },
+        { name: 'ETHUSD', desc: 'Ethereum', price: 2061.8, spread: 15, low: 2000, high: 2100 },
+        { name: 'SOLUSD', desc: 'Solana', price: 87.5, spread: 10, low: 85, high: 90 }
+      ],
+      'Stocks': [
+        { name: 'AAPL', desc: 'Apple Inc', price: 260.39, spread: 10, low: 255, high: 265 },
+        { name: 'MSFT', desc: 'Microsoft', price: 410.64, spread: 15, low: 400, high: 415 },
+        { name: 'NVDA', desc: 'NVIDIA', price: 178.51, spread: 12, low: 170, high: 185 }
       ]
     };
     
@@ -1646,10 +1656,10 @@ HTML_TEMPLATE = r"""<!doctype html>
       
       const lotsToSend = parseFloat($('inpLots').value) || 0.01;
       const params = {
-          inpPrice: $('inpPrice').value,
-          inpTp: $('inpTp').value,
-          inpSl: $('inpSl').value,
-          inpTTL: $('inpTTL').value
+          inpPrice: parseFloat($('inpPrice').value) || 0,
+          inpTp: parseFloat($('inpTp').value) || 0,
+          inpSl: parseFloat($('inpSl').value) || 0,
+          inpTTL: parseFloat($('inpTTL').value) || 0
       };
       
       window.API.submitOrder(
@@ -1724,14 +1734,18 @@ HTML_TEMPLATE = r"""<!doctype html>
         let html = '';
         positions.forEach(pos => {
             const isBuy = pos.side.toLowerCase() === 'buy';
+            const symDigits = pos.symbol === 'XAUUSD' || pos.symbol.includes('JPY') ? 2 : 4;
+            const openPrice = parseFloat(pos.open_price).toFixed(symDigits);
+            const currentPrice = parseFloat(pos.current_price).toFixed(symDigits);
+            
             html += `
-            <div class="pos-item" onclick="openModifyOrder('${pos.ticket}', '${pos.tp}', '${pos.sl}', '${pos.symbol}')">
+            <div class="pos-item" onclick="openModifyOrder('${pos.ticket}', '${pos.tp}', '${pos.sl}', '${pos.symbol}', '${pos.lots}')">
               <div class="p-row1">
                 <div><span class="p-sym">${pos.symbol}</span>, <span class="p-type ${isBuy?'buy':'sell'}">${pos.side}</span> <span class="p-lots">${pos.lots}</span></div>
                 <div class="p-profit ${pos.profit>=0?'blue':'red'}">${fmtNum(pos.profit, 2)}</div>
               </div>
               <div class="p-row2">
-                <span>${pos.open_price} → ${pos.current_price}</span>
+                <span>${openPrice} → ${currentPrice}</span>
                 <span>#${pos.ticket}</span>
               </div>
             </div>`;
@@ -1771,6 +1785,15 @@ HTML_TEMPLATE = r"""<!doctype html>
         let html = '';
         trades.forEach(t => {
             if(String(t.cmd_id).startsWith('q_')) return;
+            
+            let detail = t.message || '';
+            try {
+                if(detail.startsWith('{')) {
+                    const obj = JSON.parse(detail);
+                    detail = `[${obj.symbol || ''}] ${obj.action || ''} ${obj.volume || ''}手 <br/> 价格: ${obj.price || obj.open_price || ''} <br/> 利润: ${obj.profit || ''}`;
+                }
+            } catch(e) {}
+
             html += `
             <div class="pos-item">
               <div class="p-row1">
@@ -1778,34 +1801,41 @@ HTML_TEMPLATE = r"""<!doctype html>
                 <div class="p-profit" style="color:var(--muted);font-size:12px">${t.received_at}</div>
               </div>
               <div class="p-row2">
-                <span style="flex:1;word-break:break-all;">${t.message || ''}</span>
+                <span style="flex:1;word-break:break-all;">${detail}</span>
               </div>
             </div>`;
         });
         $('list-history').innerHTML = html || '<div style="padding:15px;text-align:center;color:#888;">暂无记录</div>';
     }
 
-    window.openModifyOrder = function(ticket, tp, sl, symbol) {
+    window.openModifyOrder = function(ticket, tp, sl, symbol, lots) {
         window.quantState.currentModifyTicket = ticket;
-        $('modTpPrice').value = tp || '';
-        $('modSlPrice').value = sl || '';
+        window.quantState.currentModifySymbol = symbol;
+        window.quantState.currentModifyLots = parseFloat(lots) || 0;
+        $('modTpPrice').value = tp && tp !== 'undefined' && tp !== '0' ? tp : '';
+        $('modSlPrice').value = sl && sl !== 'undefined' && sl !== '0' ? sl : '';
         $('modifyMask').style.display = 'flex';
     };
 
     window.submitModifyOrder = function() {
         if(!window.quantState.currentModifyTicket) return;
-        window.API.modifyPosition(window.quantState.currentModifyTicket, $('modTpPrice').value, $('modSlPrice').value)
+        const tp = parseFloat($('modTpPrice').value) || 0;
+        const sl = parseFloat($('modSlPrice').value) || 0;
+        window.API.modifyPosition(window.quantState.currentModifyTicket, tp, sl)
         .then(res => {
-            if(res.success) { alert('已发送修改'); $('modifyMask').style.display='none'; }
+            if(res.success) { alert('已发送修改'); $('modifyMask').style.display='none'; refreshData(); }
             else alert(res.message);
         });
     };
     
     window.closePosition = function() {
         if(!window.quantState.currentModifyTicket) return;
-        window.API.submitOrder($('tradeSym').innerText, 'CLOSE', 'market', 0, 20, 0, {ticket: window.quantState.currentModifyTicket})
+        const sym = window.quantState.currentModifySymbol || $('tradeSym').innerText;
+        const lots = window.quantState.currentModifyLots || 0;
+        window.API.submitOrder(sym, 'CLOSE', 'market', 0, 20, lots, {ticket: window.quantState.currentModifyTicket})
         .then(res => {
-            if(res.success) { alert('已发送平仓指令'); $('modifyMask').style.display='none'; }
+            if(res.success) { alert('已发送平仓指令'); $('modifyMask').style.display='none'; refreshData(); }
+            else alert(res.message);
         });
     }
   </script>
@@ -1917,7 +1947,7 @@ def submit_order_v1():
         print(f"[ORDER] Calc lots failed or 0, fallback to frontend lots")
         lots = float(data.get('lots', 0))
     
-    if lots <= 0:
+    if lots <= 0 and side_raw != 'CLOSE':
         print(f"[ORDER][REJECT] Invalid lots: {lots}")
         return jsonify({"success": False, "message": "计算手数无效，请检查投入金额或价格"}), 400
 
