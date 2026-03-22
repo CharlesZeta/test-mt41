@@ -1191,7 +1191,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   <div class="tab-content" id="tab-trade">
     <div class="trade-header">
       <div class="sym-title" id="tradeSym">XAUUSD</div>
-      <div class="sym-desc">Spot Gold</div>
+      <div class="sym-desc" id="tradeSymDesc">Spot Gold</div>
     </div>
     <div class="trade-type" onclick="$('orderTypeMask').style.display='flex'">
       <span id="orderTypeText">市价执行</span>
@@ -1227,9 +1227,10 @@ HTML_TEMPLATE = r"""<!doctype html>
         <div class="t-btn" onclick="adjustInput('inpTp', 1)">+</div>
       </div>
     </div>
-    <div class="t-duration">
+    <div class="t-duration" onclick="$('ttlMask').style.display='flex'">
       <span class="t-label">期限:</span>
-      <span class="t-val">直到取消</span>
+      <span class="t-val" id="ttlDisplay">直到取消</span>
+      <input type="hidden" id="inpTTL" value="0">
     </div>
     
     <div class="trade-actions" id="actionMarket">
@@ -1297,6 +1298,19 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
+  <!-- TTL Modal -->
+  <div class="modalMask" id="ttlMask" onclick="closeModal(event, 'ttlMask')">
+    <div class="modal">
+      <div class="modalHeader">期限 <span class="close" onclick="$('ttlMask').style.display='none'">取消</span></div>
+      <div class="modalBody" style="padding:0;">
+        <div class="select-item" onclick="setTTL(0, '直到取消')">直到取消 (GTC)</div>
+        <div class="select-item" onclick="setTTL(10, '10 分钟')">10 分钟</div>
+        <div class="select-item" onclick="setTTL(60, '1 小时')">1 小时</div>
+        <div class="select-item" onclick="setTTL(1440, '1 天')">1 天</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Modify Position Modal -->
   <div class="modalMask" id="modifyMask" onclick="closeModal(event, 'modifyMask')">
     <div class="modal">
@@ -1359,13 +1373,13 @@ HTML_TEMPLATE = r"""<!doctype html>
     function fmtNum(n, d) { return parseFloat(n || 0).toFixed(d); }
 
     const categoryPairs = [
-      { name: 'D30EUR', price: 23297.5, spread: 10, low: 22709.4, high: 23306.5 },
-      { name: 'NASUSD', price: 24412.4, spread: 12, low: 23997.4, high: 24488.2 },
-      { name: 'U30USD', price: 47022.6, spread: 28, low: 46331.6, high: 47152.6 },
-      { name: 'XAUUSD', price: 5110.43, spread: 17, low: 5015.04, high: 5197.72 },
-      { name: 'EURUSD', price: 1.1561, spread: 5, low: 1.1507, high: 1.1572 },
-      { name: 'USOUSD', price: 101.04, spread: 24, low: 96.46, high: 119.49 },
-      { name: 'H33HKD', price: 25364.1, spread: 569, low: 24774.4, high: 25542.1 }
+      { name: 'D30EUR', desc: 'Germany 30', price: 23297.5, spread: 10, low: 22709.4, high: 23306.5 },
+      { name: 'NASUSD', desc: 'US Tech 100', price: 24412.4, spread: 12, low: 23997.4, high: 24488.2 },
+      { name: 'U30USD', desc: 'Wall Street 30', price: 47022.6, spread: 28, low: 46331.6, high: 47152.6 },
+      { name: 'XAUUSD', desc: 'Spot Gold', price: 5110.43, spread: 17, low: 5015.04, high: 5197.72 },
+      { name: 'EURUSD', desc: 'Euro vs US Dollar', price: 1.1561, spread: 5, low: 1.1507, high: 1.1572 },
+      { name: 'USOUSD', desc: 'US Oil', price: 101.04, spread: 24, low: 96.46, high: 119.49 },
+      { name: 'H33HKD', desc: 'Hong Kong 50', price: 25364.1, spread: 569, low: 24774.4, high: 25542.1 }
     ];
 
     window.onload = () => {
@@ -1378,11 +1392,13 @@ HTML_TEMPLATE = r"""<!doctype html>
       let html = '';
       categoryPairs.forEach(p => {
         const time = new Date().toLocaleTimeString('en-US', {hour12:false});
+        // 从后端获取的价格如果存在，可以替换这里的静态价格
+        // 这里只是初始渲染，实际价格会通过 refreshData 更新
         const bid = p.price;
         const ask = p.price + (p.spread * 0.01);
         const digits = p.name === 'EURUSD' ? 4 : 2;
         html += `
-        <div class="q-row" onclick="selectSymbol('${p.name}', ${p.price})">
+        <div class="q-row" onclick="selectSymbol('${p.name}', ${p.price}, '${p.desc}')">
           <div class="q-left">
             <div class="q-sym">${p.name}</div>
             <div class="q-time">${time}</div>
@@ -1390,8 +1406,8 @@ HTML_TEMPLATE = r"""<!doctype html>
           </div>
           <div class="q-right">
             <div class="q-prices">
-              <div class="blue">${bid.toFixed(digits)}</div>
-              <div class="red">${ask.toFixed(digits)}</div>
+              <div class="blue" id="q_bid_${p.name}">${bid.toFixed(digits)}</div>
+              <div class="red" id="q_ask_${p.name}">${ask.toFixed(digits)}</div>
             </div>
             <div class="q-hl">
               <div>最低: ${p.low.toFixed(digits)}</div>
@@ -1413,8 +1429,9 @@ HTML_TEMPLATE = r"""<!doctype html>
       if(tabId === 'history') fetchHistoryTrades();
     };
 
-    window.selectSymbol = function(name, price) {
+    window.selectSymbol = function(name, price, desc) {
       $('tradeSym').innerText = name;
+      if (desc) $('tradeSymDesc').innerText = desc;
       window.quantState.price = price;
       
       if(quoteInterval) clearInterval(quoteInterval);
@@ -1467,6 +1484,12 @@ HTML_TEMPLATE = r"""<!doctype html>
       }
     };
 
+    window.setTTL = function(val, text) {
+      $('inpTTL').value = val;
+      $('ttlDisplay').innerText = text;
+      $('ttlMask').style.display = 'none';
+    };
+
     window.closeModal = function(e, id) { if(e.target.id === id) $(id).style.display = 'none'; };
 
     window.initiateOrder = function(side) {
@@ -1490,7 +1513,8 @@ HTML_TEMPLATE = r"""<!doctype html>
       const params = {
           inpPrice: $('inpPrice').value,
           inpTp: $('inpTp').value,
-          inpSl: $('inpSl').value
+          inpSl: $('inpSl').value,
+          inpTTL: $('inpTTL').value
       };
       
       window.API.submitOrder(
@@ -1531,6 +1555,7 @@ HTML_TEMPLATE = r"""<!doctype html>
         try {
             const sym = $('tradeSym').innerText;
             const res = await fetch(`/api/latest_status?symbol=${sym}`);
+            if(!res.ok) return;
             const data = await res.json();
             
             if(data) {
@@ -1544,14 +1569,20 @@ HTML_TEMPLATE = r"""<!doctype html>
                     window.quantState.price = data.latest_quote.bid;
                     $('tBid').innerText = fmtNum(data.latest_quote.bid, sym==='XAUUSD'?2:4);
                     $('tAsk').innerText = fmtNum(data.latest_quote.ask, sym==='XAUUSD'?2:4);
+                    
+                    // 同步更新行情列表中的价格
+                    if($('q_bid_'+sym)) $('q_bid_'+sym).innerText = fmtNum(data.latest_quote.bid, sym==='XAUUSD'?2:4);
+                    if($('q_ask_'+sym)) $('q_ask_'+sym).innerText = fmtNum(data.latest_quote.ask, sym==='XAUUSD'?2:4);
                 }
                 updatePositionsList(data.positions || []);
                 
                 const pendingRes = await fetch('/api/pending_commands');
-                const pendingData = await pendingRes.json();
-                updatePendingOrdersList(pendingData.commands || []);
+                if(pendingRes.ok) {
+                    const pendingData = await pendingRes.json();
+                    updatePendingOrdersList(pendingData.commands || []);
+                }
             }
-        } catch(e) {}
+        } catch(e) { console.error("Refresh Error:", e); }
     }
 
     function updatePositionsList(positions) {
