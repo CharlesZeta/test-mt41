@@ -1083,7 +1083,10 @@ HTML_TEMPLATE = r"""<!doctype html>
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; outline: none; }
     body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); padding-bottom: 60px; padding-top: 50px; }
     
-    .top-bar { position: fixed; top: 0; left: 0; right: 0; height: 50px; background: var(--bg); border-bottom: 1px solid var(--line); display: flex; align-items: center; padding: 0 15px; font-size: 18px; font-weight: bold; z-index: 100; }
+    .top-bar { position: fixed; top: 0; left: 0; right: 0; height: 50px; background: var(--bg); border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 15px; font-size: 18px; font-weight: bold; z-index: 100; }
+    .top-bar-title { flex: 1; }
+    .top-bar-actions { display: flex; gap: 15px; font-size: 24px; color: var(--blue); cursor: pointer; }
+    .top-bar-actions span:active { opacity: 0.7; }
     .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; height: 55px; background: var(--nav-bg); border-top: 1px solid var(--line); display: flex; justify-content: space-around; align-items: center; z-index: 100; padding-bottom: env(safe-area-inset-bottom); }
     .nav-item { display: flex; flex-direction: column; align-items: center; color: var(--muted); font-size: 10px; cursor: pointer; flex: 1; }
     .nav-item.active { color: var(--blue); }
@@ -1093,8 +1096,11 @@ HTML_TEMPLATE = r"""<!doctype html>
     .tab-content.active { display: block; }
     
     /* Quotes Tab */
-    .q-row { padding: 10px 15px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; cursor: pointer; }
-    .q-left { display: flex; flex-direction: column; }
+    .q-row { padding: 10px 15px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; cursor: pointer; position: relative; }
+    .q-row.edit-mode .q-left { margin-left: 30px; }
+    .q-delete-btn { position: absolute; left: -30px; top: 50%; transform: translateY(-50%); color: var(--red); font-size: 24px; transition: 0.3s; opacity: 0; pointer-events: none; }
+    .q-row.edit-mode .q-delete-btn { left: 10px; opacity: 1; pointer-events: auto; }
+    .q-left { display: flex; flex-direction: column; transition: 0.3s; }
     .q-sym { font-size: 16px; font-weight: bold; }
     .q-time, .q-spread { font-size: 12px; color: var(--muted); margin-top: 2px; }
     .q-right { display: flex; flex-direction: column; align-items: flex-end; }
@@ -1177,10 +1183,27 @@ HTML_TEMPLATE = r"""<!doctype html>
     .quiz-opt { padding: 10px; border: 1px solid var(--line); border-radius: 8px; text-align: center; font-size: 14px; cursor: pointer; }
     .quiz-opt.selected { background: var(--blue); color: #fff; border-color: var(--blue); }
     .cta { width: 100%; padding: 15px; background: var(--blue); color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; margin-top: 10px; }
+    /* Add Symbol Modal specific */
+    .cat-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid var(--line); background: var(--nav-bg); }
+    .cat-tab { padding: 12px 15px; white-space: nowrap; color: var(--muted); font-weight: bold; cursor: pointer; }
+    .cat-tab.active { color: var(--blue); border-bottom: 2px solid var(--blue); }
+    .sym-add-item { display: flex; justify-content: space-between; align-items: center; padding: 15px; border-bottom: 1px solid var(--line); }
+    .sym-add-info { display: flex; flex-direction: column; }
+    .sym-add-name { font-weight: bold; font-size: 16px; }
+    .sym-add-desc { font-size: 12px; color: var(--muted); }
+    .sym-add-btn { color: var(--green); font-size: 24px; cursor: pointer; }
+    .sym-add-btn.added { color: var(--muted); cursor: default; }
+
   </style>
 </head>
 <body>
-  <div class="top-bar" id="topBar">行情</div>
+  <div class="top-bar">
+    <div class="top-bar-title" id="topBarTitle">行情</div>
+    <div class="top-bar-actions" id="quotesActions">
+      <span onclick="openAddSymbol()">+</span>
+      <span id="btnEditQuotes" onclick="toggleEditQuotes()">✎</span>
+    </div>
+  </div>
 
   <!-- Quotes Tab -->
   <div class="tab-content active" id="tab-quotes">
@@ -1358,6 +1381,19 @@ HTML_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
+  <!-- Add Symbol Modal -->
+  <div class="modalMask" id="addSymbolMask" onclick="closeModal(event, 'addSymbolMask')">
+    <div class="modal" style="height: 90vh;">
+      <div class="modalHeader">添加品种 <span class="close" onclick="$('addSymbolMask').style.display='none'">取消</span></div>
+      <div class="cat-tabs" id="addSymbolCats">
+        <!-- 动态生成分类 Tab -->
+      </div>
+      <div class="modalBody" id="addSymbolList" style="padding:0; overflow-y: auto; height: calc(100% - 100px);">
+        <!-- 动态生成品种列表 -->
+      </div>
+    </div>
+  </div>
+
   <script>
     const $ = id => document.getElementById(id);
     window.quantState = {
@@ -1372,25 +1408,59 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     function fmtNum(n, d) { return parseFloat(n || 0).toFixed(d); }
 
-    const categoryPairs = [
-      { name: 'D30EUR', desc: 'Germany 30', price: 23297.5, spread: 10, low: 22709.4, high: 23306.5 },
-      { name: 'NASUSD', desc: 'US Tech 100', price: 24412.4, spread: 12, low: 23997.4, high: 24488.2 },
-      { name: 'U30USD', desc: 'Wall Street 30', price: 47022.6, spread: 28, low: 46331.6, high: 47152.6 },
-      { name: 'XAUUSD', desc: 'Spot Gold', price: 5110.43, spread: 17, low: 5015.04, high: 5197.72 },
-      { name: 'EURUSD', desc: 'Euro vs US Dollar', price: 1.1561, spread: 5, low: 1.1507, high: 1.1572 },
-      { name: 'USOUSD', desc: 'US Oil', price: 101.04, spread: 24, low: 96.46, high: 119.49 },
-      { name: 'H33HKD', desc: 'Hong Kong 50', price: 25364.1, spread: 569, low: 24774.4, high: 25542.1 }
-    ];
+    const categoryPairs = {
+      'Forex': [
+        { name: 'EURUSD', desc: 'Euro vs US Dollar', price: 1.1561, spread: 5, low: 1.1507, high: 1.1572 },
+        { name: 'GBPUSD', desc: 'Great Britain Pound vs US Dollar', price: 1.2640, spread: 8, low: 1.2600, high: 1.2680 },
+        { name: 'USDJPY', desc: 'US Dollar vs Japanese Yen', price: 149.50, spread: 7, low: 149.00, high: 150.00 }
+      ],
+      'Metals': [
+        { name: 'XAUUSD', desc: 'Spot Gold', price: 5110.43, spread: 17, low: 5015.04, high: 5197.72 },
+        { name: 'XAGUSD', desc: 'Spot Silver', price: 28.50, spread: 20, low: 28.00, high: 29.00 }
+      ],
+      'Indices': [
+        { name: 'D30EUR', desc: 'Germany 30', price: 23297.5, spread: 10, low: 22709.4, high: 23306.5 },
+        { name: 'NASUSD', desc: 'US Tech 100', price: 24412.4, spread: 12, low: 23997.4, high: 24488.2 },
+        { name: 'U30USD', desc: 'Wall Street 30', price: 47022.6, spread: 28, low: 46331.6, high: 47152.6 },
+        { name: 'H33HKD', desc: 'Hong Kong 50', price: 25364.1, spread: 569, low: 24774.4, high: 25542.1 }
+      ],
+      'Commodities': [
+        { name: 'USOUSD', desc: 'US Oil', price: 101.04, spread: 24, low: 96.46, high: 119.49 },
+        { name: 'UKOUSD', desc: 'UK Brent Oil', price: 105.20, spread: 25, low: 100.00, high: 108.00 }
+      ]
+    };
+    
+    // 扁平化所有可用的大类列表，供内部查询
+    const allAvailablePairs = Object.values(categoryPairs).flat();
+
+    // 初始化收藏列表 (从 localStorage 读取)
+    let savedQuotes = [];
+    try {
+        const stored = localStorage.getItem('mt4_saved_quotes');
+        if (stored) {
+            savedQuotes = JSON.parse(stored);
+        } else {
+            // 默认收藏
+            savedQuotes = ['D30EUR', 'NASUSD', 'U30USD', 'XAUUSD', 'EURUSD', 'USOUSD', 'H33HKD'];
+            localStorage.setItem('mt4_saved_quotes', JSON.stringify(savedQuotes));
+        }
+    } catch(e) {
+        savedQuotes = ['XAUUSD', 'EURUSD'];
+    }
+    
+    let isEditMode = false;
 
     window.onload = () => {
       renderQuotes();
-      selectSymbol('XAUUSD', 5110.43);
+      selectSymbol('XAUUSD', 5110.43, 'Spot Gold');
       setInterval(refreshData, 3000);
     };
 
     function renderQuotes() {
       let html = '';
-      categoryPairs.forEach(p => {
+      const displayPairs = allAvailablePairs.filter(p => savedQuotes.includes(p.name));
+      
+      displayPairs.forEach(p => {
         const time = new Date().toLocaleTimeString('en-US', {hour12:false});
         // 从后端获取的价格如果存在，可以替换这里的静态价格
         // 这里只是初始渲染，实际价格会通过 refreshData 更新
@@ -1398,7 +1468,8 @@ HTML_TEMPLATE = r"""<!doctype html>
         const ask = p.price + (p.spread * 0.01);
         const digits = p.name === 'EURUSD' ? 4 : 2;
         html += `
-        <div class="q-row" onclick="selectSymbol('${p.name}', ${p.price}, '${p.desc}')">
+        <div class="q-row ${isEditMode ? 'edit-mode' : ''}" onclick="${isEditMode ? '' : `selectSymbol('${p.name}', ${p.price}, '${p.desc}')`}">
+          <div class="q-delete-btn" onclick="removeQuote('${p.name}', event)">⊖</div>
           <div class="q-left">
             <div class="q-sym">${p.name}</div>
             <div class="q-time">${time}</div>
@@ -1416,8 +1487,72 @@ HTML_TEMPLATE = r"""<!doctype html>
           </div>
         </div>`;
       });
-      $('quotesList').innerHTML = html;
+      $('quotesList').innerHTML = html || '<div style="padding:20px;text-align:center;color:#888;">暂无收藏品种，请点击右上角添加</div>';
     }
+
+    window.toggleEditQuotes = function() {
+        isEditMode = !isEditMode;
+        $('btnEditQuotes').style.color = isEditMode ? 'var(--red)' : 'var(--blue)';
+        renderQuotes();
+    };
+
+    window.removeQuote = function(name, event) {
+        event.stopPropagation();
+        savedQuotes = savedQuotes.filter(q => q !== name);
+        localStorage.setItem('mt4_saved_quotes', JSON.stringify(savedQuotes));
+        renderQuotes();
+    };
+
+    window.openAddSymbol = function() {
+        renderAddSymbolCats();
+        // 默认选中第一个分类
+        renderAddSymbolList(Object.keys(categoryPairs)[0]);
+        $('addSymbolMask').style.display = 'flex';
+    };
+
+    function renderAddSymbolCats() {
+        let html = '';
+        Object.keys(categoryPairs).forEach((cat, idx) => {
+            html += `<div class="cat-tab ${idx === 0 ? 'active' : ''}" onclick="switchAddCat(this, '${cat}')">${cat}</div>`;
+        });
+        $('addSymbolCats').innerHTML = html;
+    }
+
+    window.switchAddCat = function(el, cat) {
+        document.querySelectorAll('.cat-tab').forEach(t => t.classList.remove('active'));
+        el.classList.add('active');
+        renderAddSymbolList(cat);
+    };
+
+    function renderAddSymbolList(cat) {
+        let html = '';
+        const pairs = categoryPairs[cat] || [];
+        pairs.forEach(p => {
+            const isAdded = savedQuotes.includes(p.name);
+            html += `
+            <div class="sym-add-item">
+                <div class="sym-add-info">
+                    <div class="sym-add-name">${p.name}</div>
+                    <div class="sym-add-desc">${p.desc}</div>
+                </div>
+                <div class="sym-add-btn ${isAdded ? 'added' : ''}" onclick="${isAdded ? '' : `addQuote('${p.name}', this)`}">
+                    ${isAdded ? '✓' : '⊕'}
+                </div>
+            </div>`;
+        });
+        $('addSymbolList').innerHTML = html;
+    }
+
+    window.addQuote = function(name, btnEl) {
+        if (!savedQuotes.includes(name)) {
+            savedQuotes.push(name);
+            localStorage.setItem('mt4_saved_quotes', JSON.stringify(savedQuotes));
+            btnEl.innerHTML = '✓';
+            btnEl.classList.add('added');
+            btnEl.onclick = null; // 移除点击事件
+            renderQuotes(); // 更新主页面列表
+        }
+    };
 
     window.switchTab = function(tabId, title, el) {
       document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
