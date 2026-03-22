@@ -1410,33 +1410,102 @@ HTML_TEMPLATE = r"""<!doctype html>
 
     const categoryPairs = {
       'Forex': [
-        { name: 'EURUSD', desc: 'Euro vs US Dollar', price: 1.1561, spread: 5, low: 1.1507, high: 1.1572 },
+        { name: 'USDCHF', desc: 'US Dollar vs Swiss Franc', price: 0.8840, spread: 5, low: 0.8800, high: 0.8900 },
         { name: 'GBPUSD', desc: 'Great Britain Pound vs US Dollar', price: 1.2640, spread: 8, low: 1.2600, high: 1.2680 },
-        { name: 'USDJPY', desc: 'US Dollar vs Japanese Yen', price: 149.50, spread: 7, low: 149.00, high: 150.00 }
+        { name: 'EURUSD', desc: 'Euro vs US Dollar', price: 1.1561, spread: 5, low: 1.1507, high: 1.1572 },
+        { name: 'USDJPY', desc: 'US Dollar vs Japanese Yen', price: 149.50, spread: 7, low: 149.00, high: 150.00 },
+        { name: 'USDCAD', desc: 'US Dollar vs Canadian Dollar', price: 1.3580, spread: 6, low: 1.3500, high: 1.3600 },
+        { name: 'AUDUSD', desc: 'Australian Dollar vs US Dollar', price: 0.6520, spread: 5, low: 0.6500, high: 0.6550 },
+        { name: 'EURGBP', desc: 'Euro vs Great Britain Pound', price: 0.8580, spread: 6, low: 0.8550, high: 0.8600 },
+        { name: 'EURAUD', desc: 'Euro vs Australian Dollar', price: 1.6533, spread: 10, low: 1.6500, high: 1.6600 },
+        { name: 'EURCHF', desc: 'Euro vs Swiss Franc', price: 0.9050, spread: 7, low: 0.9000, high: 0.9100 },
+        { name: 'EURJPY', desc: 'Euro vs Japanese Yen', price: 162.74, spread: 9, low: 162.00, high: 163.00 },
+        { name: 'GBPCHF', desc: 'Great Britain Pound vs Swiss Franc', price: 1.0418, spread: 12, low: 1.0400, high: 1.0500 },
+        { name: 'CADJPY', desc: 'Canadian Dollar vs Japanese Yen', price: 115.48, spread: 10, low: 115.00, high: 116.00 },
+        { name: 'GBPJPY', desc: 'Great Britain Pound vs Japanese Yen', price: 210.35, spread: 15, low: 210.00, high: 211.00 },
+        { name: 'AUDNZD', desc: 'Australian Dollar vs New Zealand Dollar', price: 1.1918, spread: 8, low: 1.1900, high: 1.2000 },
+        { name: 'AUDCAD', desc: 'Australian Dollar vs Canadian Dollar', price: 0.9568, spread: 8, low: 0.9500, high: 0.9600 },
+        { name: 'AUDCHF', desc: 'Australian Dollar vs Swiss Franc', price: 0.5473, spread: 10, low: 0.5400, high: 0.5500 },
+        { name: 'AUDJPY', desc: 'Australian Dollar vs Japanese Yen', price: 110.51, spread: 10, low: 110.00, high: 111.00 },
+        { name: 'CHFJPY', desc: 'Swiss Franc vs Japanese Yen', price: 201.88, spread: 12, low: 201.00, high: 202.00 },
+        { name: 'EURNZD', desc: 'Euro vs New Zealand Dollar', price: 1.9707, spread: 15, low: 1.9600, high: 1.9800 },
+        { name: 'EURCAD', desc: 'Euro vs Canadian Dollar', price: 1.5822, spread: 12, low: 1.5800, high: 1.5900 },
+        { name: 'CADCHF', desc: 'Canadian Dollar vs Swiss Franc', price: 0.5719, spread: 10, low: 0.5700, high: 0.5800 },
+        { name: 'NZDJPY', desc: 'New Zealand Dollar vs Japanese Yen', price: 92.71, spread: 10, low: 92.00, high: 93.00 },
+        { name: 'NZDUSD', desc: 'New Zealand Dollar vs US Dollar', price: 0.5872, spread: 6, low: 0.5800, high: 0.5900 },
+        { name: 'GBPAUD', desc: 'Great Britain Pound vs Australian Dollar', price: 1.9032, spread: 15, low: 1.9000, high: 1.9100 },
+        { name: 'GBPCAD', desc: 'Great Britain Pound vs Canadian Dollar', price: 1.8213, spread: 15, low: 1.8200, high: 1.8300 },
+        { name: 'GBPNZD', desc: 'Great Britain Pound vs New Zealand Dollar', price: 2.2686, spread: 20, low: 2.2600, high: 2.2800 },
+        { name: 'NZDCAD', desc: 'New Zealand Dollar vs Canadian Dollar', price: 0.8027, spread: 10, low: 0.8000, high: 0.8100 },
+        { name: 'NZDCHF', desc: 'New Zealand Dollar vs Swiss Franc', price: 0.4591, spread: 12, low: 0.4500, high: 0.4600 },
+        { name: 'USDSGD', desc: 'US Dollar vs Singapore Dollar', price: 1.2805, spread: 10, low: 1.2800, high: 1.2900 },
+        { name: 'USDHKD', desc: 'US Dollar vs Hong Kong Dollar', price: 7.8190, spread: 5, low: 7.8100, high: 7.8300 },
+        { name: 'USDCNH', desc: 'US Dollar vs Chinese Yuan', price: 6.9147, spread: 20, low: 6.9000, high: 6.9500 }
       ],
       'Metals': [
-        { name: 'XAUUSD', desc: 'Spot Gold', price: 5110.43, spread: 17, low: 5015.04, high: 5197.72 },
-        { name: 'XAGUSD', desc: 'Spot Silver', price: 28.50, spread: 20, low: 28.00, high: 29.00 }
+        { name: 'XAGUSD', desc: 'Spot Silver', price: 82.76, spread: 20, low: 82.00, high: 83.00 },
+        { name: 'XAUUSD', desc: 'Spot Gold', price: 5110.43, spread: 17, low: 5015.04, high: 5197.72 }
       ],
       'Indices': [
-        { name: 'D30EUR', desc: 'Germany 30', price: 23297.5, spread: 10, low: 22709.4, high: 23306.5 },
-        { name: 'NASUSD', desc: 'US Tech 100', price: 24412.4, spread: 12, low: 23997.4, high: 24488.2 },
-        { name: 'U30USD', desc: 'Wall Street 30', price: 47022.6, spread: 28, low: 46331.6, high: 47152.6 },
-        { name: 'H33HKD', desc: 'Hong Kong 50', price: 25364.1, spread: 569, low: 24774.4, high: 25542.1 }
+        { name: 'U30USD', desc: 'Wall Street 30', price: 47836.1, spread: 28, low: 47000.0, high: 48000.0 },
+        { name: 'NASUSD', desc: 'US Tech 100', price: 24922.8, spread: 12, low: 24000.0, high: 25000.0 },
+        { name: 'SPXUSD', desc: 'US SPX 500', price: 6803.72, spread: 15, low: 6700.0, high: 6900.0 },
+        { name: '100GBP', desc: 'UK 100', price: 10428.9, spread: 10, low: 10400.0, high: 10500.0 },
+        { name: 'D30EUR', desc: 'Germany 30', price: 23822.2, spread: 10, low: 23000.0, high: 24000.0 },
+        { name: 'E50EUR', desc: 'Euro STOXX 50', price: 5773.4, spread: 8, low: 5700.0, high: 5800.0 },
+        { name: 'H33HKD', desc: 'Hong Kong 50', price: 25503.1, spread: 569, low: 24774.4, high: 25542.1 }
       ],
       'Commodities': [
-        { name: 'USOUSD', desc: 'US Oil', price: 101.04, spread: 24, low: 96.46, high: 119.49 },
-        { name: 'UKOUSD', desc: 'UK Brent Oil', price: 105.20, spread: 25, low: 100.00, high: 108.00 }
+        { name: 'UKOUSD', desc: 'UK Brent Oil', price: 87.35, spread: 25, low: 86.00, high: 88.00 },
+        { name: 'USOUSD', desc: 'US Crude Oil', price: 84.29, spread: 24, low: 83.00, high: 85.00 }
       ],
       'Crypto': [
         { name: 'BTCUSD', desc: 'Bitcoin', price: 70594, spread: 50, low: 69000, high: 71000 },
+        { name: 'BCHUSD', desc: 'Bitcoin Cash', price: 456.94, spread: 30, low: 450, high: 460 },
+        { name: 'RPLUSD', desc: 'Ripple', price: 1.4003, spread: 5, low: 1.35, high: 1.45 },
+        { name: 'LTCUSD', desc: 'Litecoin', price: 55.28, spread: 10, low: 50, high: 60 },
         { name: 'ETHUSD', desc: 'Ethereum', price: 2061.8, spread: 15, low: 2000, high: 2100 },
-        { name: 'SOLUSD', desc: 'Solana', price: 87.5, spread: 10, low: 85, high: 90 }
+        { name: 'XMRUSD', desc: 'Monero', price: 357.28, spread: 20, low: 350, high: 360 },
+        { name: 'BNBUSD', desc: 'Binance Coin', price: 641.10, spread: 15, low: 630, high: 650 },
+        { name: 'SOLUSD', desc: 'Solana', price: 87.5, spread: 10, low: 85, high: 90 },
+        { name: 'LNKUSD', desc: 'Chainlink', price: 9.123, spread: 5, low: 9.00, high: 9.20 },
+        { name: 'XSIUSD', desc: 'Shiba Inu', price: 0.201, spread: 2, low: 0.19, high: 0.21 },
+        { name: 'DOGUSD', desc: 'Dogecoin', price: 0.0933, spread: 2, low: 0.09, high: 0.10 },
+        { name: 'ADAUSD', desc: 'Cardano', price: 0.2673, spread: 2, low: 0.25, high: 0.28 },
+        { name: 'AVEUSD', desc: 'Aave', price: 116.35, spread: 10, low: 110, high: 120 },
+        { name: 'DSHUSD', desc: 'Dash', price: 34.063, spread: 10, low: 30, high: 40 }
       ],
       'Stocks': [
         { name: 'AAPL', desc: 'Apple Inc', price: 260.39, spread: 10, low: 255, high: 265 },
-        { name: 'MSFT', desc: 'Microsoft', price: 410.64, spread: 15, low: 400, high: 415 },
-        { name: 'NVDA', desc: 'NVIDIA', price: 178.51, spread: 12, low: 170, high: 185 }
+        { name: 'AMZN', desc: 'Amazon.com', price: 218.76, spread: 10, low: 215, high: 220 },
+        { name: 'BABA', desc: 'Alibaba Group', price: 130.22, spread: 15, low: 125, high: 135 },
+        { name: 'GOOGL', desc: 'Alphabet Inc', price: 301.18, spread: 12, low: 295, high: 305 },
+        { name: 'META', desc: 'Meta Platforms', price: 660.93, spread: 15, low: 650, high: 670 },
+        { name: 'MSFT', desc: 'Microsoft Corp', price: 410.64, spread: 15, low: 400, high: 415 },
+        { name: 'NFLX', desc: 'Netflix Inc', price: 99.14, spread: 8, low: 95, high: 105 },
+        { name: 'NVDA', desc: 'NVIDIA Corp', price: 178.51, spread: 12, low: 170, high: 185 },
+        { name: 'TSLA', desc: 'Tesla Inc', price: 405.46, spread: 15, low: 400, high: 410 },
+        { name: 'ABBV', desc: 'AbbVie Inc', price: 232.09, spread: 10, low: 230, high: 235 },
+        { name: 'ABNB', desc: 'Airbnb Inc', price: 135.71, spread: 10, low: 130, high: 140 },
+        { name: 'ABT', desc: 'Abbott Laboratories', price: 110.86, spread: 8, low: 108, high: 112 },
+        { name: 'ADBE', desc: 'Adobe Inc', price: 281.64, spread: 12, low: 280, high: 285 },
+        { name: 'AMD', desc: 'Advanced Micro Devices', price: 198.97, spread: 10, low: 195, high: 200 },
+        { name: 'AVGO', desc: 'Broadcom Inc', price: 332.70, spread: 15, low: 330, high: 335 },
+        { name: 'C', desc: 'Citigroup Inc', price: 108.86, spread: 8, low: 105, high: 110 },
+        { name: 'CRM', desc: 'Salesforce Inc', price: 201.29, spread: 10, low: 200, high: 205 },
+        { name: 'DIS', desc: 'Walt Disney Co', price: 102.35, spread: 8, low: 100, high: 105 },
+        { name: 'GS', desc: 'Goldman Sachs', price: 835.15, spread: 20, low: 830, high: 840 },
+        { name: 'INTC', desc: 'Intel Corp', price: 45.80, spread: 5, low: 45, high: 47 },
+        { name: 'JNJ', desc: 'Johnson & Johnson', price: 239.52, spread: 10, low: 235, high: 240 },
+        { name: 'MA', desc: 'Mastercard Inc', price: 524.28, spread: 15, low: 520, high: 530 },
+        { name: 'MCD', desc: 'McDonalds Corp', price: 327.32, spread: 12, low: 325, high: 330 },
+        { name: 'KO', desc: 'Coca-Cola Co', price: 76.91, spread: 5, low: 75, high: 78 },
+        { name: 'MMM', desc: '3M Co', price: 156.12, spread: 8, low: 155, high: 158 },
+        { name: 'NIO', desc: 'NIO Inc', price: 4.56, spread: 2, low: 4.50, high: 4.60 },
+        { name: 'PLTR', desc: 'Palantir Tech', price: 152.50, spread: 10, low: 150, high: 155 },
+        { name: 'SHOP', desc: 'Shopify Inc', price: 134.68, spread: 10, low: 130, high: 140 },
+        { name: 'TSM', desc: 'Taiwan Semiconductor', price: 344.40, spread: 15, low: 340, high: 350 },
+        { name: 'V', desc: 'Visa Inc', price: 319.47, spread: 12, low: 315, high: 325 }
       ]
     };
     
